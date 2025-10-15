@@ -9,6 +9,8 @@
 // - Provides the base platform layer for the engine
 //
 //=========================================================================
+mod event_mapper;
+mod input_buffer;
 
 use winit::{
     application::ApplicationHandler,
@@ -17,6 +19,8 @@ use winit::{
     window::Window,
 };
 use log::*;
+use input_buffer::InputBuffer;
+use crate::engine::event::{SystemEvent};
 
 //=== Platform Struct =====================================================
 //
@@ -25,6 +29,7 @@ use log::*;
 // the engine on desktop platforms.
 //
 pub struct Platform {
+    buffer: InputBuffer,
     window: Option<Window>
 }
 
@@ -43,7 +48,7 @@ impl Platform {
     /// ```
     pub fn new() -> Self {
         info!(target: "platform_subsystem", "Platform subsystem initialized (no window yet).");
-        Self { window: None }
+        Self { window: None, buffer: InputBuffer::new() }
     }
 
     //--- Run --------------------------------------------------------------
@@ -56,6 +61,13 @@ impl Platform {
         let event_loop = EventLoop::new().unwrap();
         event_loop.run_app(self).unwrap();
         info!(target: "platform_subsystem", "Event loop terminated.");
+    }
+
+    fn redraw_requested(&mut self) {
+        let events = self.buffer.drain();
+        events.iter().for_each(|event| {
+            info!("Detectedindow event: {:?}", event)
+        });
     }
 }
 
@@ -85,7 +97,19 @@ impl ApplicationHandler for Platform {
                 warn!(target: "platform_subsystem", "Close requested — exiting application.");
                 event_loop.exit();   // Handle the close button request.
             }
-            _ => {} // Ignore other events for now.
+
+            WindowEvent::CursorMoved { .. } =>
+                self.buffer.push_continuous(SystemEvent::from(event)),
+
+            WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } =>
+                self.buffer.push_discrete(SystemEvent::from(event)),
+
+            WindowEvent::RedrawRequested => {
+                self.redraw_requested();
+                self.window.as_ref().unwrap().request_redraw();
+            }
+
+            _ => {warn!("Unhandled window event: {:?}", event);} // Ignore other events for now.
         }
     }
 }
