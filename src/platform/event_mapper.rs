@@ -1,7 +1,7 @@
 //=========================================================================
 // Platform Event Mapper
 //
-// Converts Winit input events to engine-level `SystemEvent` types.
+// Converts Winit input events to engine-level `RawInputEvent` types.
 // Provides a clean separation between OS-specific input and the
 // engine’s internal event representation.
 //
@@ -16,7 +16,7 @@ use winit::event::{WindowEvent,KeyEvent, ElementState, MouseButton as WinitMouse
 use winit::keyboard::PhysicalKey;
 use winit::keyboard::KeyCode as WinitKeyCode;
 
-use crate::engine::event::{SystemEvent, KeyCode, MouseButton};
+use crate::core::input::event::{RawInputEvent, KeyCode, MouseButton};
 
 //=== Key Conversion ======================================================
 //
@@ -74,8 +74,8 @@ impl From<WinitMouseButton> for MouseButton {
 
 //=== Full Event Conversion ===============================================
 //
-// Converts full `WindowEvent` objects into `SystemEvent`s. Unsupported
-// events are converted into `SystemEvent::Unidentified`.
+// Converts full `WindowEvent` objects into `RawInputEvent`s. Unsupported
+// events are converted into `RawInputEvent::Unidentified`.
 //
 // Notes:
 // - `KeyboardInput` is translated into `KeyDown`/`KeyUp`.
@@ -84,7 +84,7 @@ impl From<WinitMouseButton> for MouseButton {
 // - Other Winit events are ignored for now.
 //
 
-impl From<WindowEvent> for SystemEvent {
+impl From<WindowEvent> for RawInputEvent {
     fn from(win_event: WindowEvent) -> Self {
         match win_event {
             //--- Keyboard Input ------------------------------------------
@@ -100,8 +100,8 @@ impl From<WindowEvent> for SystemEvent {
                 };
 
                 match state {
-                    ElementState::Pressed => SystemEvent::KeyDown(key),
-                    ElementState::Released => SystemEvent::KeyUp(key),
+                    ElementState::Pressed => RawInputEvent::KeyDown(key),
+                    ElementState::Released => RawInputEvent::KeyUp(key),
                 }
             }
 
@@ -109,21 +109,21 @@ impl From<WindowEvent> for SystemEvent {
             WindowEvent::MouseInput { state, button, .. } => {
                 let btn = MouseButton::from(button);
                 match state {
-                    ElementState::Pressed => SystemEvent::MouseButtonDown(btn),
-                    ElementState::Released => SystemEvent::MouseButtonUp(btn),
+                    ElementState::Pressed => RawInputEvent::MouseButtonDown(btn),
+                    ElementState::Released => RawInputEvent::MouseButtonUp(btn),
                 }
             }
 
             //--- Mouse Movement ------------------------------------------
             WindowEvent::CursorMoved { position, .. } => {
-                SystemEvent::MouseMoved {
+                RawInputEvent::MouseMoved {
                     x: position.x as f32,
                     y: position.y as f32,
                 }
             }
 
             //--- Unhandled Events ----------------------------------------
-            _ => SystemEvent::Unidentified,
+            _ => RawInputEvent::Unidentified,
         }
     }
 }

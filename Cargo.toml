@@ -8,4 +8,5 @@ winit = "0.30"
 wgpu = "0.20"
 log = "0.4.28"
 env_logger = "0.10"
-pollster = "0.3"  # per bloccare async setup GPU
+pollster = "0.3"
+array = "0.0.1"  # per bloccare async setup GPU

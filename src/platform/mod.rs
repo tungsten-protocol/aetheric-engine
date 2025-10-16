@@ -1,4 +1,5 @@
-//=== Platform ============================================================
+//=========================================================================
+// Platform
 //
 // Handles the platform subsystem: window creation, main event loop,
 // and integration with Winit.
@@ -9,6 +10,7 @@
 // - Provides the base platform layer for the engine
 //
 //=========================================================================
+
 mod event_mapper;
 mod input_buffer;
 
@@ -19,43 +21,30 @@ use winit::{
     window::Window,
 };
 use log::*;
+use std::rc::Rc;
+use std::cell::RefCell;
 use input_buffer::InputBuffer;
-use crate::engine::event::{SystemEvent};
+use crate::core::input::event::RawInputEvent;
+use crate::core::input::input_manager::InputManager;
 
 //=== Platform Struct =====================================================
-//
-// Represents the platform layer. Stores the window handle and controls
-// the application lifecycle. This is the entry point for running
-// the engine on desktop platforms.
-//
-pub struct Platform {
+
+pub(crate) struct Platform {
     buffer: InputBuffer,
-    window: Option<Window>
+    input_manager: Rc<RefCell<InputManager>>,
+    window: Option<Window>,
 }
 
 impl Platform {
-    //--- Initialization ---------------------------------------------------
-    //
-    // Initializes the platform subsystem without creating a window yet.
-    // The window will be created once the application resumes.
-    //
-
-    /// Creates a new `Platform` instance with an empty initial state.
-    ///
-    /// # Example
-    /// ```no_run
-    /// let platform = Platform::new();
-    /// ```
-    pub fn new() -> Self {
+    pub fn new(input_manager: Rc<RefCell<InputManager>>) -> Self {
         info!(target: "platform_subsystem", "Platform subsystem initialized (no window yet).");
-        Self { window: None, buffer: InputBuffer::new() }
+        Self {
+            window: None,
+            buffer: InputBuffer::new(),
+            input_manager,
+        }
     }
 
-    //--- Run --------------------------------------------------------------
-    //
-    // Starts the main event loop. Blocks execution until the window
-    // is closed or the application exits.
-    //
     pub fn run(&mut self) {
         info!(target: "platform_subsystem", "Starting main event loop");
         let event_loop = EventLoop::new().unwrap();
@@ -63,26 +52,27 @@ impl Platform {
         info!(target: "platform_subsystem", "Event loop terminated.");
     }
 
-    fn redraw_requested(&mut self) {
+    fn process_input(&mut self) {
         let events = self.buffer.drain();
-        events.iter().for_each(|event| {
-            info!("Detectedindow event: {:?}", event)
-        });
+        let mut im = self.input_manager.borrow_mut();
+        im.digest_input_buffer(events);
+
+        if im.has_changed() {
+            info!("Input updated: {:?}", *im);
+        }
     }
 }
 
 //=== Winit Integration ===================================================
-//
-// Implements `ApplicationHandler` to handle Winit events.
-// Manages window creation, close requests, and basic input handling.
-//
 
 impl ApplicationHandler for Platform {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop.create_window(
-            winit::window::WindowAttributes::default()
-                .with_title("Aetheric Engine — Day 1"),
-        ).unwrap();
+        let window = event_loop
+            .create_window(
+                winit::window::WindowAttributes::default()
+                    .with_title("Aetheric Engine — Day 1"),
+            )
+            .unwrap();
         self.window = Some(window);
     }
 
@@ -95,21 +85,23 @@ impl ApplicationHandler for Platform {
         match event {
             WindowEvent::CloseRequested => {
                 warn!(target: "platform_subsystem", "Close requested — exiting application.");
-                event_loop.exit();   // Handle the close button request.
+                event_loop.exit();
             }
 
             WindowEvent::CursorMoved { .. } =>
-                self.buffer.push_continuous(SystemEvent::from(event)),
+                self.buffer.push_continuous(RawInputEvent::from(event)),
 
             WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } =>
-                self.buffer.push_discrete(SystemEvent::from(event)),
+                self.buffer.push_discrete(RawInputEvent::from(event)),
 
             WindowEvent::RedrawRequested => {
-                self.redraw_requested();
-                self.window.as_ref().unwrap().request_redraw();
+                self.process_input();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
 
-            _ => {warn!("Unhandled window event: {:?}", event);} // Ignore other events for now.
+            _ => warn!("Unhandled window event: {:?}", event),
         }
     }
 }

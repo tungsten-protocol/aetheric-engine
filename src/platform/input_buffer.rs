@@ -14,10 +14,10 @@
 //=========================================================================
 
 use std::collections::HashSet;
-use crate::engine::event::SystemEvent;
+use crate::core::input::event::RawInputEvent;
 pub struct InputBuffer {
-    discrete: Vec<SystemEvent>,
-    continuous: HashSet<SystemEvent>,
+    discrete: Vec<RawInputEvent>,
+    continuous: HashSet<RawInputEvent>,
 }
 
 //=== InputBuffer Struct ==================================================
@@ -47,7 +47,7 @@ impl InputBuffer {
     // Inserts or replaces a continuous event (like mouse motion).
     // The latest state always overrides the previous one for the same kind.
     //
-    pub fn push_continuous(&mut self, event: SystemEvent) {
+    pub fn push_continuous(&mut self, event: RawInputEvent) {
         self.continuous.replace(event);
     }
 
@@ -56,7 +56,7 @@ impl InputBuffer {
     // Pushes discrete (one-shot) events like key presses or button clicks.
     // Duplicate consecutive events are ignored to prevent flooding.
     //
-    pub fn push_discrete(&mut self, event: SystemEvent) {
+    pub fn push_discrete(&mut self, event: RawInputEvent) {
         if self.discrete.is_empty() || self.discrete.last().unwrap() != &event {
             self.discrete.push(event);
         }
@@ -67,7 +67,7 @@ impl InputBuffer {
     // Returns all collected events for this frame and clears the buffer.
     // Combines both discrete and continuous events into a single vector.
     //
-    pub fn drain(&mut self) -> Vec<SystemEvent> {
+    pub fn drain(&mut self) -> Vec<RawInputEvent> {
         let mut events =  std::mem::take(&mut self.discrete);
         events.extend(self.continuous.drain());
         self.continuous.clear();
@@ -96,14 +96,14 @@ impl InputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::event::{KeyCode};
+    use crate::core::input::event::{KeyCode};
 
-    fn make_key_down(code: KeyCode) -> SystemEvent {
-        SystemEvent::KeyDown(code)
+    fn make_key_down(code: KeyCode) -> RawInputEvent {
+        RawInputEvent::KeyDown(code)
     }
 
-    fn make_mouse_move(x: f32, y: f32) -> SystemEvent {
-        SystemEvent::MouseMoved { x, y }
+    fn make_mouse_move(x: f32, y: f32) -> RawInputEvent {
+        RawInputEvent::MouseMoved { x, y }
     }
 
     #[test]
@@ -125,7 +125,7 @@ mod tests {
 
         // Verify coordinates of the stored event
         let event = buffer.continuous.iter().next().unwrap();
-        if let SystemEvent::MouseMoved { x, y } = event {
+        if let RawInputEvent::MouseMoved { x, y } = event {
             assert_eq!((*x, *y), (20.0, 30.0), "MouseMoved should reflect last input");
         } else {
             panic!("Expected MouseMoved event, found {:?}", event);
