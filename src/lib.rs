@@ -1,13 +1,13 @@
 //=========================================================================
 // Aetheric Engine — Library Root
 //
-// This crate defines the public API surface of the Aetheric Engine.
+// Defines the public API surface of the Aetheric Engine crate.
 //
 // Responsibilities:
-// - Expose the core engine interface (`Engine`)
-// - Keep internal modules (like `platform`) hidden from end users
-// - Provide clean separation between the high-level engine facade
-//   and lower-level subsystems (input, rendering, OS integration)
+// - Expose the main Engine interface
+// - Keep platform and internal systems private
+// - Maintain clear separation between high-level façade
+//   and low-level subsystems (core logic, OS integration)
 //
 // Typical usage:
 // ```no_run
@@ -20,29 +20,29 @@
 //
 //=========================================================================
 
-//--- Public Modules ------------------------------------------------------
+//=== Public Modules ======================================================
 //
-// `core` contains all internal engine systems and logic (input, ECS, etc.)
-// It is exposed publicly for engine-level extensibility, but normal
-// application code will mostly use the top-level `Engine` facade.
+// The `core` module hosts all fundamental engine systems (input,
+// ECS, etc.). It is public for advanced engine-level extensions,
+// but typical applications will interact primarily through `Engine`.
 //
 pub mod core;
 
-//--- Internal Modules ----------------------------------------------------
+//=== Internal Modules ====================================================
 //
-// `platform` contains OS-specific logic (window, Winit integration,
-// event loop, etc.) and is kept private, as it is not part of the
-// public API surface.
+// - `platform`: OS integration layer (windowing, Winit, I/O)
+// - `engine`:   main entry point and initialization logic
 //
-// `engine` defines the main engine entry point and initialization logic.
+// Both are internal and not exposed as part of the public API.
 //
 mod platform;
 mod engine;
 
-//--- Public Exports ------------------------------------------------------
+//=== Public Exports ======================================================
 //
-// Re-exports the `Engine` struct as the main entry point for applications.
-// This allows users to simply `use aetheric::Engine;` without having to
-// know the internal module structure.
+// Re-exports the `Engine` façade as the canonical entry point.
+// This allows application code to simply:
+//     use aetheric::Engine;
+// without referencing internal module paths.
 //
 pub use engine::Engine;

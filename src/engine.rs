@@ -1,72 +1,86 @@
 //=========================================================================
 // Engine
 //
-// Entry point for the Aetheric game engine.
+// Entry point for the Aetheric Engine.
 //
 // Responsibilities:
-// - Initialize global engine systems (input, etc.)
+// - Initialize and own all core subsystems (input, logic, etc.)
+// - Spawn the core runtime thread (logic + input processing)
 // - Instantiate and delegate control to the platform layer
-// - Provide a clean, minimal API surface for the game/application
+// - Maintain deterministic pacing at a fixed tick rate (TPS)
 //
 // Notes:
-// The engine owns its core systems (e.g. InputManager) and shares them
-// with the platform layer through reference-counted smart pointers (`Rc`).
-// This allows `Platform` to access and mutate shared state (e.g. input)
-// during the Winit-driven event loop.
+// The Engine acts as the root coordinator. It delegates:
+//   • Input and logic updates → CoreSystemsOrchestrator (logic thread)
+//   • Platform integration → Platform subsystem (main thread)
+//
+// Communication between these two layers is asynchronous via MPSC,
+// ensuring full isolation, thread safety, and zero shared-state locking.
 //
 //=========================================================================
-use std::rc::Rc;
-use std::cell::RefCell;
 
-use crate::platform::Platform;
-use crate::core::input::InputManager;
+//=== Standard Library Imports ============================================
+use std::sync::mpsc::{channel, Sender, Receiver};
+
+//=== Internal Modules ====================================================
+use crate::core::{input, CoreSystemsOrchestrator};
+use crate::platform::{Platform, PlatformEvent};
+
+//=== Public Re-exports ===================================================
+pub use input::InputSystem;
 
 //=== Engine Struct =======================================================
 //
-// The main engine facade exposed to the application.
+// Main façade of the Aetheric Engine.
 //
-// Holds references to global systems that persist for the entire lifetime
-// of the program. Currently includes only the input subsystem.
+// Owns the core systems orchestrator, configures timing, and drives
+// both the core (logic) and platform (window/input) threads.
 //
 pub struct Engine {
-    /// Shared handle to the input subsystem.
-    ///
-    /// Wrapped in `Rc<RefCell<...>>` to allow both the Engine
-    /// and the Platform (running the Winit loop) to access and
-    /// mutate input state safely.
-    input_manager: Rc<RefCell<InputManager>>,
+    orchestrator: CoreSystemsOrchestrator,
+    tps: f64,
 }
 
 impl Engine {
     //--- Construction -----------------------------------------------------
     //
-    // Initializes the engine and its subsystems, but does not start
-    // the main loop yet.
+    // Creates a new Engine instance with default settings.
+    // Core systems are initialized, but no threads are started yet.
     //
     pub fn new() -> Self {
         Self {
-            input_manager: Rc::new(RefCell::new(InputManager::new())),
+            orchestrator: CoreSystemsOrchestrator::new(),
+            tps: 60.0,
         }
     }
 
-    //--- Run --------------------------------------------------------------
+    //--- run() ------------------------------------------------------------
     //
-    // Starts the engine, delegates control to the platform layer,
-    // and blocks until the user closes the window or requests exit.
+    // Starts the engine runtime and blocks until the application exits.
+    //
+    // Sequence:
+    //  1. Creates an MPSC channel for platform → engine communication.
+    //  2. Spawns the core thread that runs logic and input updates at `tps`.
+    //  3. Creates and runs the Platform (e.g. Winit event loop).
+    //
+    // Once the Platform exits (e.g. window closed), the core thread
+    // will terminate automatically.
     //
     // Example:
     // ```no_run
     // fn main() {
-    //     aetheric::Engine::run();
+    //     aetheric::Engine::new().run();
     // }
     // ```
-    pub fn run(&mut self) {
-        // Clone the shared InputManager handle so that Platform
-        // can mutate it during the event loop.
-        let mut platform = Platform::new(self.input_manager.clone());
+    pub fn run(self) {
+        //--- 1. Create communication channel -----------------------------
+        let (tx, rx): (Sender<PlatformEvent>, Receiver<PlatformEvent>) = channel();
 
-        // Transfer control to the platform (Winit event loop).
-        // This call blocks until the app exits.
-        platform.run();
+        //--- 2. Spawn the core logic thread -------------------------------
+        self.orchestrator.spawn_core_thread(rx, self.tps);
+
+        //--- 3. Launch the platform subsystem -----------------------------
+        let mut platform = Platform::new(tx);
+        platform.run(); // Blocks until window close
     }
 }

@@ -1,51 +1,60 @@
 //=========================================================================
 // Input Buffer
 //
-// Collects and normalizes raw input events (keyboard, mouse, etc.) into
-// two categories: discrete and continuous. Provides frame-level access
-// to the event stream for the engine's input system.
+// Collects and normalizes raw input events (keyboard, mouse, etc.)
+// into two categories: discrete and continuous. Acts as a transient
+// event aggregator between the Platform and the InputSystem.
 //
 // Responsibilities:
-// - Store incoming platform events (via Platform subsystem)
-// - Deduplicate repeated discrete inputs (KeyDown, KeyUp, etc.)
-// - Coalesce continuous events (mouse movement, analog input, etc.)
-// - Expose unified frame event list through `drain()`
+// - Store incoming platform events per frame
+// - Deduplicate repeated discrete inputs (e.g., KeyDown)
+// - Coalesce continuous inputs (e.g., MouseMoved)
+// - Provide unified access to collected events via `drain()`
 //
+// Notes:
+// The InputBuffer exists only for the current frame and is reset
+// after being drained by the engine’s core systems.
 //=========================================================================
 
+//=== Standard Library Imports ============================================
 use std::collections::HashSet;
+
+//=== Internal Modules ====================================================
 use crate::core::input::event::RawInputEvent;
+
+//=== InputBuffer Struct ==================================================
+//
+// Represents the transient event store for one frame of input.
+//
+// Internally maintains:
+// - `discrete`: unique, one-shot inputs (e.g., KeyDown)
+// - `continuous`: last-known state of continuous inputs (e.g., MouseMoved)
+//
 pub struct InputBuffer {
     discrete: Vec<RawInputEvent>,
     continuous: HashSet<RawInputEvent>,
 }
 
-//=== InputBuffer Struct ==================================================
-//
-// Represents the transient input buffer for a single frame.
-//
-// Internally maintains:
-// - `discrete`: a vector of unique, one-shot events (e.g., KeyDown)
-// - `continuous`: a hashmap of continuous inputs (e.g., MouseMoved)
-//
 impl InputBuffer {
-
-    //--- Constructor ------------------------------------------------------
+    //--- Construction -----------------------------------------------------
     //
-    // Creates a new input buffer with pre-allocated space for common usage.
-    // Capacity is chosen to avoid reallocations under normal gameplay.
+    // Creates a new input buffer with preallocated capacity to minimize
+    // reallocations under typical gameplay conditions.
     //
     pub fn new() -> Self {
+        const DISCRETE_BASE: usize = 128;
+        const CONTINUOUS_BASE: usize = 16;
+
         Self {
-            discrete: Vec::with_capacity(1024),
-            continuous: HashSet::with_capacity(64),
+            discrete: Vec::with_capacity(DISCRETE_BASE),
+            continuous: HashSet::with_capacity(CONTINUOUS_BASE),
         }
     }
 
     //--- Continuous Event Handling ---------------------------------------
     //
-    // Inserts or replaces a continuous event (like mouse motion).
-    // The latest state always overrides the previous one for the same kind.
+    // Inserts or replaces a continuous input (e.g., mouse movement).
+    // The latest event always replaces any previous one of the same type.
     //
     pub fn push_continuous(&mut self, event: RawInputEvent) {
         self.continuous.replace(event);
@@ -53,11 +62,11 @@ impl InputBuffer {
 
     //--- Discrete Event Handling -----------------------------------------
     //
-    // Pushes discrete (one-shot) events like key presses or button clicks.
+    // Appends a discrete input (e.g., key press, button click).
     // Duplicate consecutive events are ignored to prevent flooding.
     //
     pub fn push_discrete(&mut self, event: RawInputEvent) {
-        if self.discrete.is_empty() || self.discrete.last().unwrap() != &event {
+        if self.discrete.last() != Some(&event) {
             self.discrete.push(event);
         }
     }
@@ -68,7 +77,7 @@ impl InputBuffer {
     // Combines both discrete and continuous events into a single vector.
     //
     pub fn drain(&mut self) -> Vec<RawInputEvent> {
-        let mut events =  std::mem::take(&mut self.discrete);
+        let mut events = std::mem::take(&mut self.discrete);
         events.extend(self.continuous.drain());
         self.continuous.clear();
         events
@@ -96,37 +105,41 @@ impl InputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::input::event::{KeyCode};
+    use crate::core::input::event::KeyCode;
 
-    fn make_key_down(code: KeyCode) -> RawInputEvent {
+    fn key_down(code: KeyCode) -> RawInputEvent {
         RawInputEvent::KeyDown(code)
     }
 
-    fn make_mouse_move(x: f32, y: f32) -> RawInputEvent {
+    fn mouse_move(x: f32, y: f32) -> RawInputEvent {
         RawInputEvent::MouseMoved { x, y }
     }
 
     #[test]
     fn test_discrete_deduplication() {
         let mut buffer = InputBuffer::new();
-        buffer.push_discrete(make_key_down(KeyCode::KeyA));
-        buffer.push_discrete(make_key_down(KeyCode::KeyA));
-        buffer.push_discrete(make_key_down(KeyCode::KeyB));
-        assert_eq!(buffer.discrete.len(), 2);
+        buffer.push_discrete(key_down(KeyCode::KeyA));
+        buffer.push_discrete(key_down(KeyCode::KeyA));
+        buffer.push_discrete(key_down(KeyCode::KeyB));
+        assert_eq!(buffer.discrete.len(), 2, "Duplicates should be ignored");
     }
 
     #[test]
     fn test_continuous_overwrite() {
         let mut buffer = InputBuffer::new();
-        
-        buffer.push_continuous(make_mouse_move(10.0, 10.0));
-        buffer.push_continuous(make_mouse_move(20.0, 30.0));
-        assert_eq!(buffer.continuous.len(), 1, "Continuous buffer should only keep latest event");
 
-        // Verify coordinates of the stored event
+        buffer.push_continuous(mouse_move(10.0, 10.0));
+        buffer.push_continuous(mouse_move(20.0, 30.0));
+
+        assert_eq!(
+            buffer.continuous.len(),
+            1,
+            "Continuous buffer should keep only the latest event"
+        );
+
         let event = buffer.continuous.iter().next().unwrap();
         if let RawInputEvent::MouseMoved { x, y } = event {
-            assert_eq!((*x, *y), (20.0, 30.0), "MouseMoved should reflect last input");
+            assert_eq!((*x, *y), (20.0, 30.0));
         } else {
             panic!("Expected MouseMoved event, found {:?}", event);
         }
@@ -135,8 +148,8 @@ mod tests {
     #[test]
     fn test_drain_clears_buffer() {
         let mut buffer = InputBuffer::new();
-        buffer.push_discrete(make_key_down(KeyCode::KeyA));
-        buffer.push_continuous(make_mouse_move(5.0, 5.0));
+        buffer.push_discrete(key_down(KeyCode::KeyA));
+        buffer.push_continuous(mouse_move(5.0, 5.0));
 
         let events = buffer.drain();
         assert_eq!(events.len(), 2);
@@ -146,44 +159,37 @@ mod tests {
     #[test]
     fn test_clear_behavior() {
         let mut buffer = InputBuffer::new();
-        buffer.push_discrete(make_key_down(KeyCode::KeyA));
-        buffer.push_continuous(make_mouse_move(1.0, 2.0));
+        buffer.push_discrete(key_down(KeyCode::KeyA));
+        buffer.push_continuous(mouse_move(1.0, 2.0));
         buffer.clear();
         assert!(buffer.is_empty());
     }
 
-    //--- Memory Retention Test ------------------------------------------
+    //--- Memory Retention -------------------------------------------------
     //
-    // Ensures that calling `clear()` does not deallocate the underlying
-    // memory of either `Vec` or `HashMap`. This allows for efficient
-    // reuse of the buffer across multiple frames without reallocations.
+    // Ensures that `clear()` does not deallocate underlying storage,
+    // preserving buffer capacity for reuse across frames.
     //
     #[test]
     fn test_clear_does_not_deallocate() {
         let mut buffer = InputBuffer::new();
 
-        // Fill with some data to trigger internal allocation
-        for i in 0..2048 {
-            buffer.push_discrete(make_key_down(KeyCode::Unidentified));
+        // Fill buffer to trigger allocation growth
+        for _ in 0..256 {
+            buffer.push_discrete(key_down(KeyCode::Unidentified));
+        }
+        for i in 0..32 {
+            buffer.push_continuous(mouse_move(i as f32, i as f32));
         }
 
-        for i in 0..128 {
-            buffer.push_continuous(make_mouse_move(i as f32, i as f32));
-        }
+        let vec_cap_before = buffer.discrete.capacity();
+        let map_cap_before = buffer.continuous.capacity();
 
-        // Capture capacities before clearing
-        let vec_capacity_before = buffer.discrete.capacity();
-        let map_capacity_before = buffer.continuous.capacity();
-
-        // Clear the buffer
         buffer.clear();
 
-        // After clearing, lengths must be zero
         assert_eq!(buffer.discrete.len(), 0);
         assert_eq!(buffer.continuous.len(), 0);
-
-        // But capacities must remain unchanged
-        assert_eq!(buffer.discrete.capacity(), vec_capacity_before);
-        assert_eq!(buffer.continuous.capacity(), map_capacity_before);
+        assert_eq!(buffer.discrete.capacity(), vec_cap_before);
+        assert_eq!(buffer.continuous.capacity(), map_cap_before);
     }
 }
