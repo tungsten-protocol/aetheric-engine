@@ -1,93 +1,445 @@
 //=========================================================================
 // Input System
 //
-// High-level interface for input handling within the engine.
-// Wraps and manages the internal `InputState`, providing per-frame updates
-// and query methods for gameplay, simulation, and UI layers.
+// Unified input handling system for the engine.
+// Maintains both persistent state (what's currently held) and frame deltas
+// (what changed this frame) for efficient querying.
 //
 // Responsibilities:
-// - Aggregate and process batches of raw input events
-// - Update the persistent `InputState` each frame
-// - Expose high-level, read-only queries (keyboard, mouse, etc.)
+// - Process batches of raw input events each frame
+// - Track persistent state (keys/buttons currently down)
+// - Track frame transitions (pressed/released this frame)
+// - Accumulate continuous input (mouse movement)
+// - Map raw input to high-level game actions via bindings
+// - Provide high-level query API for gameplay code
 //
-// Notes:
-// This system is owned and updated by the CoreSystemsOrchestrator.
-// It provides a stable abstraction over low-level input event handling.
+// Design Philosophy:
+// - Separation: Raw state (StateTracker) vs semantic actions (ActionMapper)
+// - Flexibility: Runtime rebinding + compile-time fluent API
+// - Performance: Frame-local allocations, HashSet deduplication O(1)
+// - Type safety: Generic over Action type, ensuring compile-time correctness
+//
+// Processing Model:
+// The system operates on a "pull" model: game code processes events once
+// per frame by calling process_frame(), then queries actions/state.
+// State persists between frames (keys held), but deltas reset each frame
+// (pressed/released flags).
 //
 //=========================================================================
 
 //=== Submodules ==========================================================
+
+pub mod action;
 pub mod event;
-mod input_state;
+
+mod state_tracker;
+mod action_mapper;
+
+//=== Public Re-exports ===================================================
+
+pub use action::{Action, InputContext};
+pub use event::{KeyCode, MouseButton, Modifiers};
+pub(crate) use event::InputEvent;
+
+//=== Standard Library Imports ============================================
+
+use std::collections::HashSet;
 
 //=== Internal Imports ====================================================
-use input_state::InputState;
-use event::RawInputEvent;
-use crate::core::input::event::{KeyCode, MouseButton};
 
-//=== External Crates =====================================================
-use log::info;
+use state_tracker::StateTracker;
+use action_mapper::ActionMapper;
 
 //=== InputSystem =========================================================
-//
-// Owns the engine's global input state and provides access to it.
-// This is the public-facing API for querying user input.
-//
-pub struct InputSystem {
-    input_state: InputState,
+
+/// Unified input handling system coordinating state tracking and action mapping.
+///
+/// # Architecture
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────┐
+/// │               InputSystem<A>                        │
+/// │                                                     │
+/// │  ┌──────────────────┐      ┌────────────────────┐   │
+/// │  │  StateTracker    │      │ ActionMapper<A>    │   │
+/// │  │                  │      │                    │   │
+/// │  │ • Keys down      │      │ • Key bindings     │   │
+/// │  │ • Buttons down   │      │ • Mouse bindings   │   │
+/// │  │ • Mouse pos/delta│      │ • Active context   │   │
+/// │  │ • Modifiers      │      │                    │   │
+/// │  │ • Frame deltas   │      │ (Key+Mods) → Action│   │
+/// │  └──────────────────┘      └────────────────────┘   │
+/// │           ↓                         ↓               │
+/// │           └────────┬────────────────┘               │
+/// │                    ↓                                │
+/// │            current_actions: Vec<A>                  │
+/// └─────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Query Levels
+///
+/// 1. **Actions** (high-level): Game-defined semantic actions from bindings
+/// 2. **Raw State** (mid-level): Direct key/button pressed/down/released queries
+/// 3. **Mouse** (low-level): Position, delta, and button states
+///
+/// # Processing Pipeline
+///
+/// Each frame (`process_frame`):
+/// 1. Clear previous frame's deltas (pressed/released flags)
+/// 2. Process all event batches → update state
+/// 3. Finalize continuous inputs (mouse delta calculation)
+/// 4. Generate actions via current context bindings
+///
+/// # Examples
+///
+/// ```
+/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode, InputContext};
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameAction { Jump, Shoot, Interact }
+/// impl Action for GameAction {}
+///
+/// // Setup with fluent API
+/// let mut input = InputSystem::<GameAction>::new()
+///     .with_binding(KeyCode::Space, GameAction::Jump)
+///     .with_binding(KeyCode::KeyF, GameAction::Shoot);
+///
+/// // Each frame: process events
+/// input.process_frame(&events);
+///
+/// // Query actions
+/// for action in input.actions() {
+///     match action {
+///         GameAction::Jump => player.jump(),
+///         GameAction::Shoot => player.shoot(),
+///         GameAction::Interact => player.interact(),
+///     }
+/// }
+///
+/// // Or raw state
+/// if input.is_key_down(KeyCode::KeyW) {
+///     player.move_forward();
+/// }
+/// ```
+pub struct InputSystem<A: Action> {
+    /// Low-level state tracker (keys, buttons, mouse)
+    state: StateTracker,
+
+    /// Action mapping system (bindings, contexts)
+    mapper: ActionMapper<A>,
+
+    /// Actions triggered this frame (generated by process_frame)
+    current_actions: Vec<A>,
 }
 
-impl InputSystem {
+impl<A: Action> InputSystem<A> {
     //--- Construction -----------------------------------------------------
+
+    /// Creates a new input system with Primary context active and no bindings.
     pub fn new() -> Self {
         Self {
-            input_state: InputState::new(),
+            state: StateTracker::new(),
+            mapper: ActionMapper::new(),
+            current_actions: Vec::new(),
         }
     }
 
-    //--- update() ---------------------------------------------------------
-    //
-    // Consumes all input batches received during the current frame,
-    // updates the underlying `InputState`.
-    //
-    pub fn update(&mut self, input_batches: &mut Vec<Vec<RawInputEvent>>) {
-        for batch in input_batches.drain(..) {
-            self.input_state.digest_input_buffer(&batch);
+    //--- Frame Processing -------------------------------------------------
+
+    /// Processes all input events for the current frame.
+    ///
+    /// Call once per frame with events from platform layer.
+    ///
+    /// # Processing Pipeline
+    /// 1. Clear previous frame's deltas (pressed/released flags)
+    /// 2. Update state from all event batches
+    /// 3. Finalize continuous inputs (mouse delta)
+    /// 4. Generate actions via current bindings
+    ///
+    /// # Arguments
+    ///
+    /// * `event_batches` - Slices of events (typically discrete + continuous)
+    pub fn process_frame(&mut self, event_batches: &[Vec<InputEvent>]) {
+        // 1. Clear previous frame's deltas
+        self.state.clear();
+
+        // 2. Process all event batches
+        for batch in event_batches {
+            self.state.process_events(batch);
         }
 
-        if self.input_state.has_changed {
-            info!("Input updated: {:?}", self.input_state);
-            self.input_state.reset_changed();
+        // 3. Calculate mouse delta AFTER all batches processed
+        self.state.finalize_frame();
+
+        // 4. Generate actions with deduplication
+        self.current_actions.clear();
+        let modifiers = self.state.modifiers();
+        let mut seen = HashSet::new();
+
+        for key in self.state.keys_pressed() {
+            if let Some(action) = self.mapper.map_key(*key, modifiers) {
+                if seen.insert(action) {
+                    self.current_actions.push(action);
+                }
+            }
+        }
+
+        for btn in self.state.buttons_pressed() {
+            if let Some(action) = self.mapper.map_button(*btn, modifiers) {
+                if seen.insert(action) {
+                    self.current_actions.push(action);
+                }
+            }
         }
     }
 
-    //--- Query Methods ----------------------------------------------------
-    //
-    // High-level API for accessing input state from gameplay or UI code.
-    //
+    //=====================================================================
+    // Action Queries
+    //=====================================================================
 
-    /// Returns `true` if the specified key is currently pressed.
+    /// Returns actions triggered this frame.
+    ///
+    /// Empty if no bindings matched or no inputs received.
+    #[must_use]
+    #[inline]
+    pub fn actions(&self) -> &[A] {
+        &self.current_actions
+    }
+
+    /// Checks if a specific action was triggered this frame.
+    ///
+    /// Equivalent to `input.actions().contains(action)` but more semantic.
+    #[inline]
+    pub fn has_action(&self, action: &A) -> bool {
+        self.current_actions.contains(action)
+    }
+
+    //=====================================================================
+    // Fluent Configuration API (Immutable Chain)
+    //=====================================================================
+
+    /// Binds a key to an action using fluent API (consumes self).
+    ///
+    /// Binding uses the current active context. For runtime modification
+    /// use [`bind_key`](Self::bind_key) instead.
+    ///
+    /// # Examples
+    /// ```
+    /// # use aetheric_engine::core::input::{InputSystem, Action, KeyCode};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Jump }
+    /// # impl Action for GameAction {}
+    /// let input = InputSystem::<GameAction>::new()
+    ///     .with_binding(KeyCode::Space, GameAction::Jump);
+    /// ```
+    pub fn with_binding(mut self, key: KeyCode, action: A) -> Self {
+        let ctx = self.mapper.current_context();
+        self.mapper.bind_key(key, action, ctx);
+        self
+    }
+
+    /// Binds a key with modifiers (exact match required).
+    ///
+    /// # Examples
+    /// ```
+    /// # use aetheric_engine::core::input::{InputSystem, Action, KeyCode, Modifiers};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Save }
+    /// # impl Action for GameAction {}
+    /// let input = InputSystem::<GameAction>::new()
+    ///     .with_binding_mods(KeyCode::KeyS, Modifiers::CTRL, GameAction::Save);
+    /// ```
+    pub fn with_binding_mods(
+        mut self,
+        key: KeyCode,
+        modifiers: Modifiers,
+        action: A
+    ) -> Self {
+        let ctx = self.mapper.current_context();
+        self.mapper.bind_key_with_mods(key, modifiers, action, ctx);
+        self
+    }
+
+    /// Sets the active context using fluent API.
+    ///
+    /// # Examples
+    /// ```
+    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Jump }
+    /// # impl Action for GameAction {}
+    /// let input = InputSystem::<GameAction>::new()
+    ///     .with_context(InputContext::custom(0));
+    /// ```
+    pub fn with_context(mut self, context: InputContext) -> Self {
+        self.mapper.set_context(context);
+        self
+    }
+
+    //=====================================================================
+    // Runtime Configuration API (Mutable)
+    //=====================================================================
+
+    /// Binds a key to an action at runtime.
+    ///
+    /// Replaces existing binding if present. For setup-time configuration
+    /// prefer [`with_binding`](Self::with_binding).
+    pub fn bind_key(&mut self, key: KeyCode, action: A, context: InputContext) {
+        self.mapper.bind_key(key, action, context);
+    }
+
+    /// Binds a key with modifiers at runtime (modifiers must match exactly).
+    pub fn bind_key_with_mods(
+        &mut self,
+        key: KeyCode,
+        modifiers: Modifiers,
+        action: A,
+        context: InputContext,
+    ) {
+        self.mapper.bind_key_with_mods(key, modifiers, action, context);
+    }
+
+    /// Binds a mouse button to an action.
+    pub fn bind_mouse(&mut self, button: MouseButton, action: A, context: InputContext) {
+        self.mapper.bind_mouse(button, action, context);
+    }
+
+    /// Binds a mouse button with modifiers (exact match).
+    pub fn bind_mouse_with_mods(
+        &mut self,
+        button: MouseButton,
+        modifiers: Modifiers,
+        action: A,
+        context: InputContext,
+    ) {
+        self.mapper.bind_mouse_with_mods(button, modifiers, action, context);
+    }
+
+    /// Removes all bindings for a key in the specified context.
+    pub fn unbind_key(&mut self, key: KeyCode, context: InputContext) {
+        self.mapper.unbind_key(key, context);
+    }
+
+    /// Clears all bindings for a context.
+    pub fn clear_context(&mut self, context: InputContext) {
+        self.mapper.clear_context(context);
+    }
+
+    //=====================================================================
+    // Context Management
+    //=====================================================================
+
+    /// Sets the active input context (only active bindings generate actions).
+    pub fn set_context(&mut self, context: InputContext) {
+        self.mapper.set_context(context);
+    }
+
+    /// Returns the currently active context.
+    #[must_use]
+    pub fn current_context(&self) -> InputContext {
+        self.mapper.current_context()
+    }
+
+    //=====================================================================
+    // Raw State Queries - Keyboard
+    //=====================================================================
+
+    /// Returns `true` if key transitioned UP → DOWN this frame (one frame only).
+    ///
+    /// Use for discrete actions like jumping or toggling menus.
+    #[inline]
     pub fn is_key_pressed(&self, key: KeyCode) -> bool {
-        self.input_state
-            .discrete
-            .contains(&crate::core::input::input_state::DiscreteInput::Key(key))
+        self.state.is_key_pressed(key)
     }
 
-    /// Returns `true` if the specified mouse button is currently pressed.
-    pub fn is_button_pressed(&self, btn: MouseButton) -> bool {
-        self.input_state
-            .discrete
-            .contains(&crate::core::input::input_state::DiscreteInput::Button(btn))
+    /// Returns `true` while key is held (every frame).
+    ///
+    /// Use for continuous actions like movement or charging.
+    #[inline]
+    pub fn is_key_down(&self, key: KeyCode) -> bool {
+        self.state.is_key_down(key)
     }
 
-    /// Returns the current mouse position as `(x, y)`.
+    /// Returns `true` if key transitioned DOWN → UP this frame.
+    ///
+    /// Use for release-dependent actions like ending a charge attack.
+    #[inline]
+    pub fn is_key_released(&self, key: KeyCode) -> bool {
+        self.state.is_key_released(key)
+    }
+
+    //=====================================================================
+    // Raw State Queries - Mouse Buttons
+    //=====================================================================
+
+    /// Like [`is_key_pressed`](Self::is_key_pressed) but for mouse buttons.
+    #[inline]
+    pub fn is_button_pressed(&self, button: MouseButton) -> bool {
+        self.state.is_button_pressed(button)
+    }
+
+    /// Like [`is_key_down`](Self::is_key_down) but for mouse buttons.
+    #[inline]
+    pub fn is_button_down(&self, button: MouseButton) -> bool {
+        self.state.is_button_down(button)
+    }
+
+    /// Like [`is_key_released`](Self::is_key_released) but for mouse buttons.
+    #[inline]
+    pub fn is_button_released(&self, button: MouseButton) -> bool {
+        self.state.is_button_released(button)
+    }
+
+    //=====================================================================
+    // Raw State Queries - Mouse Position & Movement
+    //=====================================================================
+
+    /// Returns mouse position in screen coordinates (pixels, top-left origin).
+    #[must_use]
+    #[inline]
     pub fn mouse_position(&self) -> (f32, f32) {
-        self.input_state.mouse
+        self.state.mouse_position()
     }
 
-    /// Returns whether the input state changed during the last update.
-    pub fn has_changed(&self) -> bool {
-        self.input_state.has_changed
+    /// Returns mouse movement this frame (0,0 if no movement).
+    ///
+    /// Useful for camera control, drag operations, etc.
+    #[must_use]
+    #[inline]
+    pub fn mouse_delta(&self) -> (f32, f32) {
+        self.state.mouse_delta()
+    }
+
+    //=====================================================================
+    // Raw State Queries - Modifiers
+    //=====================================================================
+
+    /// Returns `true` if Shift is currently held.
+    #[inline]
+    pub fn shift_held(&self) -> bool {
+        self.state.shift_held()
+    }
+
+    /// Returns `true` if Ctrl is currently held.
+    #[inline]
+    pub fn ctrl_held(&self) -> bool {
+        self.state.ctrl_held()
+    }
+
+    /// Returns `true` if Alt is currently held.
+    #[inline]
+    pub fn alt_held(&self) -> bool {
+        self.state.alt_held()
+    }
+}
+
+//=========================================================================
+// Default Implementation
+//=========================================================================
+
+impl<A: Action> Default for InputSystem<A> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -98,64 +450,574 @@ impl InputSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::input::event::{RawInputEvent, KeyCode, MouseButton};
 
-    //--- Test Helpers -----------------------------------------------------
-    fn key_down(key: KeyCode) -> RawInputEvent {
-        RawInputEvent::KeyDown(key)
-    }
-    fn key_up(key: KeyCode) -> RawInputEvent {
-        RawInputEvent::KeyUp(key)
-    }
-    fn mouse_down(btn: MouseButton) -> RawInputEvent {
-        RawInputEvent::MouseButtonDown(btn)
-    }
-    fn mouse_up(btn: MouseButton) -> RawInputEvent {
-        RawInputEvent::MouseButtonUp(btn)
-    }
-    fn mouse_move(x: f32, y: f32) -> RawInputEvent {
-        RawInputEvent::MouseMoved { x, y }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestAction {
+        Jump,
+        Shoot,
+        MoveUp,
+        Save,
+        AltFire,
     }
 
-    //--- Tests ------------------------------------------------------------
+    impl Action for TestAction {}
+
+    fn key_down(key: KeyCode) -> InputEvent {
+        InputEvent::KeyDown {
+            key,
+            modifiers: Modifiers::NONE
+        }
+    }
+
+    fn key_down_with_mods(key: KeyCode, mods: Modifiers) -> InputEvent {
+        InputEvent::KeyDown {
+            key,
+            modifiers: mods
+        }
+    }
+
+    fn key_up(key: KeyCode) -> InputEvent {
+        InputEvent::KeyUp {
+            key,
+            modifiers: Modifiers::NONE
+        }
+    }
+
+    fn mouse_up(button: MouseButton) -> InputEvent {
+        InputEvent::MouseButtonUp {
+            button,
+            modifiers: Modifiers::NONE
+        }
+    }
+
+    fn mouse_down(button: MouseButton) -> InputEvent {
+        InputEvent::MouseButtonDown {
+            button,
+            modifiers: Modifiers::NONE
+        }
+    }
+
+    fn mouse_move(x: f32, y: f32) -> InputEvent {
+        InputEvent::MouseMoved { x, y }
+    }
+
+    //=====================================================================
+    // Basic Functionality
+    //=====================================================================
 
     #[test]
-    fn key_press_and_release_updates_state() {
-        let mut system = InputSystem::new();
+    fn new_system_starts_empty() {
+        let input = InputSystem::<TestAction>::new();
 
-        let mut batches = vec![vec![key_down(KeyCode::KeyA)]];
-        system.update(&mut batches);
-        assert!(system.has_changed());
-        assert!(system.is_key_pressed(KeyCode::KeyA));
-
-        let mut batches = vec![vec![key_up(KeyCode::KeyA)]];
-        system.update(&mut batches);
-        assert!(system.has_changed());
-        assert!(!system.is_key_pressed(KeyCode::KeyA));
+        assert!(input.actions().is_empty());
+        assert_eq!(input.current_context(), InputContext::Primary);
     }
 
     #[test]
-    fn mouse_button_press_and_release_updates_state() {
-        let mut system = InputSystem::new();
+    fn process_frame_generates_actions() {
+        let mut input = InputSystem::<TestAction>::new();
 
-        let mut batches = vec![vec![mouse_down(MouseButton::Left)]];
-        system.update(&mut batches);
-        assert!(system.has_changed());
-        assert!(system.is_button_pressed(MouseButton::Left));
+        input.bind_key(KeyCode::Space, TestAction::Jump, InputContext::Primary);
 
-        let mut batches = vec![vec![mouse_up(MouseButton::Left)]];
-        system.update(&mut batches);
-        assert!(system.has_changed());
-        assert!(!system.is_button_pressed(MouseButton::Left));
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+        assert!(input.has_action(&TestAction::Jump));
     }
 
     #[test]
-    fn mouse_movement_updates_position() {
-        let mut system = InputSystem::new();
+    fn process_frame_deduplicates_actions() {
+        let mut input = InputSystem::<TestAction>::new();
 
-        let mut batches = vec![vec![mouse_move(100.0, 200.0)]];
-        system.update(&mut batches);
-        assert!(system.has_changed());
-        assert_eq!(system.mouse_position(), (100.0, 200.0));
+        input.bind_key(KeyCode::KeyW, TestAction::MoveUp, InputContext::Primary);
+        input.bind_key(KeyCode::ArrowUp, TestAction::MoveUp, InputContext::Primary);
+
+        let events = [vec![
+            key_down(KeyCode::KeyW),
+            key_down(KeyCode::ArrowUp),
+        ]];
+        input.process_frame(&events);
+
+        assert_eq!(input.actions(), &[TestAction::MoveUp]);
+    }
+
+    #[test]
+    fn actions_clear_between_frames() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, InputContext::Primary);
+
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+
+        input.process_frame(&[]);
+        assert!(input.actions().is_empty());
+    }
+
+    #[test]
+    fn context_switching() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let gameplay = InputContext::Primary;
+        let menu = InputContext::custom(0);
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, gameplay);
+        input.bind_key(KeyCode::Space, TestAction::Shoot, menu);
+
+        // Gameplay context
+        input.set_context(gameplay);
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+
+        // Release and switch
+        let events = [vec![key_up(KeyCode::Space)]];
+        input.process_frame(&events);
+
+        // Menu context
+        input.set_context(menu);
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Shoot]);
+    }
+
+    //=====================================================================
+    // Modifier Tests
+    //=====================================================================
+
+    #[test]
+    fn modifiers_exact_match_required() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key_with_mods(
+            KeyCode::KeyS,
+            Modifiers::CTRL,
+            TestAction::Save,
+            InputContext::Primary
+        );
+
+        // Without Ctrl - no action
+        let events = [vec![key_down(KeyCode::KeyS)]];
+        input.process_frame(&events);
+        assert!(input.actions().is_empty());
+
+        // Release S
+        let events = [vec![key_up(KeyCode::KeyS)]];
+        input.process_frame(&events);
+
+        // With Ctrl - action triggered
+        let events = [vec![key_down_with_mods(KeyCode::KeyS, Modifiers::CTRL)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Save]);
+    }
+
+    #[test]
+    fn modifiers_extra_keys_dont_match() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key_with_mods(
+            KeyCode::KeyS,
+            Modifiers::CTRL,
+            TestAction::Save,
+            InputContext::Primary
+        );
+
+        // Ctrl+Shift+S should NOT match Ctrl+S
+        let events = [vec![key_down_with_mods(KeyCode::KeyS, Modifiers::SHIFT_CTRL)]];
+        input.process_frame(&events);
+        assert!(input.actions().is_empty());
+    }
+
+    #[test]
+    fn same_key_different_modifiers() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key(KeyCode::KeyS, TestAction::Shoot, InputContext::Primary);
+        input.bind_key_with_mods(
+            KeyCode::KeyS,
+            Modifiers::CTRL,
+            TestAction::Save,
+            InputContext::Primary
+        );
+
+        // S alone → Shoot
+        let events = [vec![key_down(KeyCode::KeyS)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Shoot]);
+
+        // Release S
+        let events = [vec![key_up(KeyCode::KeyS)]];
+        input.process_frame(&events);
+
+        // Ctrl+S → Save
+        let events = [vec![key_down_with_mods(KeyCode::KeyS, Modifiers::CTRL)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Save]);
+    }
+
+    //=====================================================================
+    // Mouse Tests
+    //=====================================================================
+
+    #[test]
+    fn mouse_button_binding() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_mouse(MouseButton::Left, TestAction::Shoot, InputContext::Primary);
+
+        let events = [vec![mouse_down(MouseButton::Left)]];
+        input.process_frame(&events);
+
+        assert_eq!(input.actions(), &[TestAction::Shoot]);
+    }
+
+    #[test]
+    fn mouse_button_with_modifiers() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_mouse_with_mods(
+            MouseButton::Left,
+            Modifiers::CTRL,
+            TestAction::AltFire,
+            InputContext::Primary
+        );
+
+        // Left click without Ctrl - no action
+        let events = [vec![mouse_down(MouseButton::Left)]];
+        input.process_frame(&events);
+        assert!(input.actions().is_empty());
+
+        // Release Mouse
+        let events = [vec![mouse_up(MouseButton::Left)]];
+        input.process_frame(&events);
+
+        // Ctrl+Left click - action triggered
+        let events = [vec![InputEvent::MouseButtonDown {
+            button: MouseButton::Left,
+            modifiers: Modifiers::CTRL
+        }]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::AltFire]);
+    }
+
+    #[test]
+    fn mouse_position_tracking() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let events = [vec![mouse_move(100.0, 200.0)]];
+        input.process_frame(&events);
+
+        assert_eq!(input.mouse_position(), (100.0, 200.0));
+    }
+
+    #[test]
+    fn mouse_delta_calculation() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Frame 1: Move to (100, 100)
+        let events = [vec![mouse_move(100.0, 100.0)]];
+        input.process_frame(&events);
+        assert_eq!(input.mouse_delta(), (100.0, 100.0));
+
+        // Frame 2: Move to (150, 120)
+        let events = [vec![mouse_move(150.0, 120.0)]];
+        input.process_frame(&events);
+        assert_eq!(input.mouse_delta(), (50.0, 20.0));
+
+        // Frame 3: No movement
+        input.process_frame(&[]);
+        assert_eq!(input.mouse_delta(), (0.0, 0.0));
+    }
+
+    //=====================================================================
+    // Raw State Tests
+    //=====================================================================
+
+    #[test]
+    fn is_key_pressed_only_first_frame() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Frame 1: Key down
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert!(input.is_key_pressed(KeyCode::Space));
+        assert!(input.is_key_down(KeyCode::Space));
+
+        // Frame 2: Still held (no new events)
+        input.process_frame(&[]);
+        assert!(!input.is_key_pressed(KeyCode::Space)); // Not pressed again
+        assert!(input.is_key_down(KeyCode::Space));     // Still down
+
+        // Frame 3: Released
+        let events = [vec![key_up(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert!(!input.is_key_pressed(KeyCode::Space));
+        assert!(!input.is_key_down(KeyCode::Space));
+        assert!(input.is_key_released(KeyCode::Space));
+    }
+
+    #[test]
+    fn multiple_keys_independent() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let events = [vec![
+            key_down(KeyCode::KeyW),
+            key_down(KeyCode::KeyA),
+        ]];
+        input.process_frame(&events);
+
+        assert!(input.is_key_down(KeyCode::KeyW));
+        assert!(input.is_key_down(KeyCode::KeyA));
+        assert!(!input.is_key_down(KeyCode::KeyS));
+
+        // Release one
+        let events = [vec![key_up(KeyCode::KeyA)]];
+        input.process_frame(&events);
+
+        assert!(input.is_key_down(KeyCode::KeyW));
+        assert!(!input.is_key_down(KeyCode::KeyA));
+    }
+
+    #[test]
+    fn modifier_state_queries() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let events = [vec![key_down_with_mods(KeyCode::KeyA, Modifiers::SHIFT)]];
+        input.process_frame(&events);
+
+        assert!(input.shift_held());
+        assert!(!input.ctrl_held());
+        assert!(!input.alt_held());
+    }
+
+    //=====================================================================
+    // Binding Management Tests
+    //=====================================================================
+
+    #[test]
+    fn unbind_key_removes_binding() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, InputContext::Primary);
+
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+
+        // Unbind
+        input.unbind_key(KeyCode::Space, InputContext::Primary);
+
+        input.process_frame(&events);
+        assert!(input.actions().is_empty());
+    }
+
+    #[test]
+    fn clear_context_removes_all_bindings() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let gameplay = InputContext::Primary;
+        let menu = InputContext::custom(0);
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, gameplay);
+        input.bind_key(KeyCode::KeyS, TestAction::Shoot, gameplay);
+        input.bind_key(KeyCode::KeyE, TestAction::Save, menu);
+
+        // Clear gameplay context
+        input.clear_context(gameplay);
+
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.set_context(gameplay);
+        input.process_frame(&events);
+        assert!(input.actions().is_empty());
+
+        // Menu binding still exists
+        input.set_context(menu);
+        let events = [vec![key_down(KeyCode::KeyE)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Save]);
+    }
+
+    #[test]
+    fn rebinding_replaces_action() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, InputContext::Primary);
+
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+
+        // Release Space
+        let events = [vec![key_up(KeyCode::Space)]];
+        input.process_frame(&events);
+
+        // Rebind to different action
+        input.bind_key(KeyCode::Space, TestAction::Shoot, InputContext::Primary);
+
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Shoot]);
+    }
+
+    //=====================================================================
+    // Fluent API Tests
+    //=====================================================================
+
+    #[test]
+    fn fluent_api_chaining() {
+        let input = InputSystem::<TestAction>::new()
+            .with_context(InputContext::Primary)
+            .with_binding(KeyCode::Space, TestAction::Jump)
+            .with_binding(KeyCode::KeyF, TestAction::Shoot);
+
+        // Can't test directly without processing, but compilation succeeds
+        assert_eq!(input.current_context(), InputContext::Primary);
+    }
+
+    #[test]
+    fn fluent_api_with_modifiers() {
+        let mut input = InputSystem::<TestAction>::new()
+            .with_binding_mods(KeyCode::KeyS, Modifiers::CTRL, TestAction::Save);
+
+        let events = [vec![key_down_with_mods(KeyCode::KeyS, Modifiers::CTRL)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Save]);
+    }
+
+    //=====================================================================
+    // Edge Cases & Stress Tests
+    //=====================================================================
+
+    #[test]
+    fn many_bindings_same_context() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Bind 50 keys to same action
+        for i in 0..26 {
+            let key = match i {
+                0 => KeyCode::KeyA,
+                1 => KeyCode::KeyB,
+                2 => KeyCode::KeyC,
+                3 => KeyCode::KeyD,
+                4 => KeyCode::KeyE,
+                5 => KeyCode::KeyF,
+                6 => KeyCode::KeyG,
+                7 => KeyCode::KeyH,
+                8 => KeyCode::KeyI,
+                9 => KeyCode::KeyJ,
+                10 => KeyCode::KeyK,
+                11 => KeyCode::KeyL,
+                12 => KeyCode::KeyM,
+                13 => KeyCode::KeyN,
+                14 => KeyCode::KeyO,
+                15 => KeyCode::KeyP,
+                16 => KeyCode::KeyQ,
+                17 => KeyCode::KeyR,
+                18 => KeyCode::KeyS,
+                19 => KeyCode::KeyT,
+                20 => KeyCode::KeyU,
+                21 => KeyCode::KeyV,
+                22 => KeyCode::KeyW,
+                23 => KeyCode::KeyX,
+                24 => KeyCode::KeyY,
+                25 => KeyCode::KeyZ,
+                _ => KeyCode::Space,
+            };
+            input.bind_key(key, TestAction::Jump, InputContext::Primary);
+        }
+
+        // Any key triggers action
+        let events = [vec![key_down(KeyCode::KeyM)]];
+        input.process_frame(&events);
+        assert_eq!(input.actions(), &[TestAction::Jump]);
+    }
+
+    #[test]
+    fn simultaneous_inputs_multiple_actions() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, InputContext::Primary);
+        input.bind_key(KeyCode::KeyF, TestAction::Shoot, InputContext::Primary);
+        input.bind_mouse(MouseButton::Left, TestAction::AltFire, InputContext::Primary);
+
+        let events = [vec![
+            key_down(KeyCode::Space),
+            key_down(KeyCode::KeyF),
+            mouse_down(MouseButton::Left),
+        ]];
+        input.process_frame(&events);
+
+        assert_eq!(input.actions().len(), 3);
+        assert!(input.has_action(&TestAction::Jump));
+        assert!(input.has_action(&TestAction::Shoot));
+        assert!(input.has_action(&TestAction::AltFire));
+    }
+
+    #[test]
+    fn key_held_across_many_frames() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Initial press
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert!(input.is_key_pressed(KeyCode::Space));
+
+        // Hold for 100 frames
+        for _ in 0..100 {
+            input.process_frame(&[]);
+            assert!(input.is_key_down(KeyCode::Space));
+            assert!(!input.is_key_pressed(KeyCode::Space));
+        }
+
+        // Release
+        let events = [vec![key_up(KeyCode::Space)]];
+        input.process_frame(&events);
+        assert!(input.is_key_released(KeyCode::Space));
+        assert!(!input.is_key_down(KeyCode::Space));
+    }
+
+    #[test]
+    fn empty_event_batches_handled() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Process empty batches shouldn't panic
+        input.process_frame(&[]);
+        input.process_frame(&[vec![], vec![], vec![]]);
+
+        assert!(input.actions().is_empty());
+    }
+
+    #[test]
+    fn no_binding_no_action() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        // Press key with no binding
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+
+        assert!(input.actions().is_empty());
+        // But raw state still works
+        assert!(input.is_key_pressed(KeyCode::Space));
+    }
+
+    #[test]
+    fn context_isolation() {
+        let mut input = InputSystem::<TestAction>::new();
+
+        let ctx1 = InputContext::Primary;
+        let ctx2 = InputContext::custom(0);
+
+        input.bind_key(KeyCode::Space, TestAction::Jump, ctx1);
+
+        // No binding in ctx2
+        input.set_context(ctx2);
+        let events = [vec![key_down(KeyCode::Space)]];
+        input.process_frame(&events);
+
+        assert!(input.actions().is_empty());
+        // But raw state still works
+        assert!(input.is_key_pressed(KeyCode::Space));
     }
 }
