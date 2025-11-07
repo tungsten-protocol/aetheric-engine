@@ -20,18 +20,21 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use log::{info, warn};
 
-//=== Internal Dependencies ===============================================
-
-use input::{Action, InputSystem};
-use platform_bridge::{EventCollector, PlatformEvent, TickControl};
-use world_resources::WorldResources;
-
 //=== Module Declarations =================================================
 
 pub mod input;
-pub mod world_resources;
+pub mod global_resources;
 
 pub(crate) mod platform_bridge;
+
+//=== Public API ==========================================================
+
+pub use input::{Action, InputSystem};
+pub use global_resources::GlobalResources;
+
+//=== Internal Dependencies ===============================================
+
+use platform_bridge::{EventCollector, PlatformEvent, TickControl};
 
 //=== CoreSystemsOrchestrator =============================================
 
@@ -40,14 +43,27 @@ pub(crate) mod platform_bridge;
 /// Runs at fixed timestep for deterministic simulation, independent of
 /// platform frame rate. Communicates via message passing only.
 pub(crate) struct CoreSystemsOrchestrator<A: Action> {
-    world: WorldResources<A>,
+    ctx: GlobalResources<A>,
 }
 
 impl<A: Action> CoreSystemsOrchestrator<A> {
     //--- Construction -----------------------------------------------------
 
     pub(crate) fn new(input_system: InputSystem<A>) -> Self {
-        Self { world: WorldResources::new(input_system) }
+        Self { ctx: GlobalResources::new(input_system) }
+    }
+
+    //--- Resource Initialization ------------------------------------------
+
+    /// Allows external initialization of resources before spawning core thread.
+    ///
+    /// Provides mutable access to `GlobalResources` for configuration
+    /// (input bindings, system setup, etc.) via a closure.
+    pub(crate) fn init_resources<F>(&mut self, init_fn: F)
+    where
+        F: FnOnce(&mut GlobalResources<A>),
+    {
+        init_fn(&mut self.ctx);
     }
 
     //--- Thread Lifecycle -------------------------------------------------
@@ -85,7 +101,7 @@ impl<A: Action> CoreSystemsOrchestrator<A> {
             }
 
             // --- input update phase ---
-            self.world.input.process_frame(event_collector.batches());
+            self.ctx.input.process_frame(event_collector.batches());
 
             // --- systems update phase ---
             self.update_systems();
@@ -97,12 +113,12 @@ impl<A: Action> CoreSystemsOrchestrator<A> {
 
     //--- System Updates ---------------------------------------------------
     fn update_systems(&mut self) {
-        Self::prova_system(&self.world);
+        Self::prova_system(&self.ctx);
 
         // Future: self.physics_system.update(&mut ctx);
     }
 
-    fn prova_system(ctx: &WorldResources<A>){
+    fn prova_system(ctx: &GlobalResources<A>){
         for action in ctx.input.actions(){
             println!("{:?}", action);
         }

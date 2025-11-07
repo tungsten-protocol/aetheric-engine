@@ -28,13 +28,29 @@ pub enum MouseButton {
     /// Middle button (wheel click).
     Middle,
 
-    /// Any other button (side buttons, thumb buttons, macro keys).
+    /// Any other button beyond the standard three.
+    ///
+    /// Includes side buttons (button 4/5), thumb buttons, macro keys, etc.
+    /// Note: Not all platforms expose these buttons consistently.
     Other
 }
 
 //=== KeyCode =============================================================
 
-/// Physical keyboard key identifier (location-based, not character-based).
+/// Physical keyboard key identifier based on key position, not character output.
+///
+/// Keys are identified by physical location, not the character they produce.
+/// For example, `KeyCode::KeyW` is always the same physical key, even on
+/// non-QWERTY layouts (AZERTY, Dvorak, etc.). This ensures consistent game
+/// controls across different keyboard layouts.
+///
+/// # Why Location-Based?
+///
+/// - **Game controls**: "WASD" movement works the same on all layouts
+/// - **Modifier keys**: Shift+W produces "W", not "w" or other characters
+/// - **Cross-platform**: Platform layer normalizes key codes
+///
+/// For text input (chat, names, etc.), you'll need character events (future API).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyCode {
     //--- Numeric Keys -----------------------------------------------------
@@ -197,8 +213,45 @@ impl Hash for InputEvent {
 
 //=== Modifiers ===========================================================
 
-/// Modifier key state. Does not distinguish left/right variants.
-/// Modifiers must match exactly in bindings (Ctrl+S ≠ Ctrl+Shift+S).
+/// Modifier key state for Shift, Ctrl, and Alt.
+///
+/// Does not distinguish left/right variants (e.g., Left Shift = Right Shift).
+/// Modifiers must match exactly in bindings: `Ctrl+S` ≠ `Ctrl+Shift+S`.
+///
+/// # Exact Matching Behavior
+///
+/// When binding keys with modifiers using [`InputSystem::bind_key_with_mods`](crate::core::InputSystem::bind_key_with_mods),
+/// the modifiers must match exactly. Pressing additional modifiers will not
+/// trigger the action.
+///
+/// # Example
+///
+/// ```
+/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode, Modifiers, InputContext};
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameAction { Save, SaveAs }
+/// impl Action for GameAction {}
+///
+/// let mut input = InputSystem::<GameAction>::new();
+///
+/// // Bind Ctrl+S (save) and Ctrl+Shift+S (save as)
+/// input.bind_key_with_mods(
+///     KeyCode::KeyS,
+///     Modifiers::CTRL,
+///     GameAction::Save,
+///     InputContext::Primary
+/// );
+/// input.bind_key_with_mods(
+///     KeyCode::KeyS,
+///     Modifiers::SHIFT_CTRL,
+///     GameAction::SaveAs,
+///     InputContext::Primary
+/// );
+///
+/// // Pressing Ctrl+S triggers only Save (not SaveAs)
+/// // Pressing Ctrl+Shift+S triggers only SaveAs (not Save)
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub shift: bool,

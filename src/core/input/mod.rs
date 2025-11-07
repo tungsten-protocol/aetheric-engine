@@ -35,6 +35,11 @@ pub use event::{KeyCode, Modifiers, MouseButton};
 
 //=== Internal API ========================================================
 
+// InputEvent is crate-internal only (not exposed to game developers) because:
+// - Users interact via high-level InputSystem API (actions/raw state queries)
+// - Frame processing is handled automatically by the engine
+// - Platform bridge uses it internally for thread communication
+// - Exposing it would leak implementation details and complicate the API
 pub(crate) use event::InputEvent;
 
 //=== InputSystem =========================================================
@@ -47,45 +52,58 @@ pub(crate) use event::InputEvent;
 /// 2. **Raw State** (mid-level): Direct key/button pressed/down/released queries
 /// 3. **Mouse** (low-level): Position, delta, and button states
 ///
-/// # Usage Pattern
+/// # Integration with Engine
+///
+/// When used with the engine, frame processing is handled automatically.
+/// Configure bindings during initialization and query input each tick:
+///
+/// ```no_run
+/// use aetheric_engine::EngineBuilder;
+/// use aetheric_engine::core::input::{Action, KeyCode, InputContext};
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameAction { Jump, Shoot }
+/// impl Action for GameAction {}
+///
+/// EngineBuilder::<GameAction>::new()
+///     .build()
+///     .init(|resources| {
+///         // Setup bindings during initialization
+///         resources.input.bind_key(
+///             KeyCode::Space,
+///             GameAction::Jump,
+///             InputContext::Primary
+///         );
+///         resources.input.bind_key(
+///             KeyCode::KeyF,
+///             GameAction::Shoot,
+///             InputContext::Primary
+///         );
+///     })
+///     .run(); // Engine calls process_frame() automatically each tick
+/// ```
+///
+/// # Standalone Usage
+///
+/// If using InputSystem outside the engine (e.g., tests, custom loops),
+/// call [`process_frame`](Self::process_frame) manually each frame:
 ///
 /// ```
 /// use aetheric_engine::core::input::{InputSystem, Action, KeyCode};
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// enum GameAction { Jump, Shoot, Interact }
+/// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// # // Hidden setup for doc test compilation
-/// # struct Player;
-/// # impl Player {
-/// #     fn jump(&self) {}
-/// #     fn shoot(&self) {}
-/// #     fn interact(&self) {}
-/// #     fn move_forward(&self) {}
-/// # }
-/// # let player = Player;
-///
-/// // Setup with fluent API
 /// let mut input = InputSystem::<GameAction>::new()
-///     .with_binding(KeyCode::Space, GameAction::Jump)
-///     .with_binding(KeyCode::KeyF, GameAction::Shoot);
+///     .with_binding(KeyCode::Space, GameAction::Jump);
 ///
-/// // Each frame: process events (handled automatically by the engine)
-/// // input.process_frame(&platform_events);
+/// // In your custom game loop:
+/// // input.process_frame(&event_batches);
 ///
-/// // Query actions
-/// for action in input.actions() {
-///     match action {
-///         GameAction::Jump => player.jump(),
-///         GameAction::Shoot => player.shoot(),
-///         GameAction::Interact => player.interact(),
-///     }
-/// }
-///
-/// // Or raw state
-/// if input.is_key_down(KeyCode::KeyW) {
-///     player.move_forward();
+/// // Then query input:
+/// if input.is_key_pressed(KeyCode::Space) {
+///     // Handle jump
 /// }
 /// ```
 pub struct InputSystem<A: Action> {
@@ -103,7 +121,7 @@ impl<A: Action> InputSystem<A> {
     //--- Construction -----------------------------------------------------
 
     /// Creates a new input system with Primary context active and no bindings.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: StateTracker::new(),
             mapper: ActionMapper::new(),
@@ -115,7 +133,8 @@ impl<A: Action> InputSystem<A> {
 
     /// Processes all input events for the current frame.
     ///
-    /// Call once per frame with events from platform layer.
+    /// When using the engine, this is called automatically each tick. Only call
+    /// manually if using InputSystem standalone (testing, custom game loops).
     ///
     /// # Processing Pipeline
     /// 1. Clear previous frame's deltas (pressed/released flags)
@@ -247,15 +266,36 @@ impl<A: Action> InputSystem<A> {
     // Runtime Configuration API (Mutable)
     //=====================================================================
 
-    /// Binds a key to an action at runtime.
+    /// Binds a key to an action at runtime in the specified context.
     ///
-    /// Replaces existing binding if present. For setup-time configuration
+    /// Replaces existing binding if present. For initialization-time configuration
     /// prefer [`with_binding`](Self::with_binding).
+    ///
+    /// # Parameters
+    ///
+    /// - `context`: Which input context this binding applies to. Use
+    ///   `InputContext::Primary` for main gameplay, or create custom contexts
+    ///   with `InputContext::custom(id)` for menus, vehicles, etc.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext, KeyCode};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Jump }
+    /// # impl Action for GameAction {}
+    /// let mut input = InputSystem::<GameAction>::new();
+    ///
+    /// // Bind in primary gameplay context
+    /// input.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
+    /// ```
     pub fn bind_key(&mut self, key: KeyCode, action: A, context: InputContext) {
         self.mapper.bind_key(key, action, context);
     }
 
     /// Binds a key with modifiers at runtime (modifiers must match exactly).
+    ///
+    /// Context parameter: see [`bind_key`](Self::bind_key) for context usage.
     pub fn bind_key_with_mods(
         &mut self,
         key: KeyCode,
@@ -266,12 +306,16 @@ impl<A: Action> InputSystem<A> {
         self.mapper.bind_key_with_mods(key, modifiers, action, context);
     }
 
-    /// Binds a mouse button to an action.
+    /// Binds a mouse button to an action at runtime.
+    ///
+    /// Context parameter: see [`bind_key`](Self::bind_key) for context usage.
     pub fn bind_mouse(&mut self, button: MouseButton, action: A, context: InputContext) {
         self.mapper.bind_mouse(button, action, context);
     }
 
     /// Binds a mouse button with modifiers (exact match).
+    ///
+    /// Context parameter: see [`bind_key`](Self::bind_key) for context usage.
     pub fn bind_mouse_with_mods(
         &mut self,
         button: MouseButton,
@@ -283,11 +327,16 @@ impl<A: Action> InputSystem<A> {
     }
 
     /// Removes all bindings for a key in the specified context.
+    ///
+    /// Other contexts are unaffected. Context parameter: see [`bind_key`](Self::bind_key).
     pub fn unbind_key(&mut self, key: KeyCode, context: InputContext) {
         self.mapper.unbind_key(key, context);
     }
 
     /// Clears all bindings for a context.
+    ///
+    /// Use this when switching game modes to remove all previous bindings.
+    /// Other contexts are unaffected.
     pub fn clear_context(&mut self, context: InputContext) {
         self.mapper.clear_context(context);
     }

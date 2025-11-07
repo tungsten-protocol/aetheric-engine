@@ -7,9 +7,9 @@
 // ```text
 //     EngineBuilder  ──build()──>  Engine  ──run()──>  [Runtime]
 //         │                          │
-//         ├─ with_input_system()     └─ spawns threads
-//         ├─ with_tps()                 runs platform
-//         └─ with_channel_capacity()    blocks until exit
+//         ├─ with_tps()              └─ spawns threads
+//         └─ with_channel_capacity()    runs platform
+//                                       blocks until exit
 // ```
 //
 //=========================================================================
@@ -21,21 +21,16 @@ use log::{error, info};
 
 //=== Internal Dependencies ===============================================
 
-use crate::core::input::Action;
 use crate::core::platform_bridge::PlatformEvent;
-use crate::core::CoreSystemsOrchestrator;
+use crate::core::{Action, CoreSystemsOrchestrator, GlobalResources, InputSystem};
 use crate::platform::Platform;
-
-//=== Public API ==========================================================
-
-pub use crate::core::input::InputSystem;
 
 //=== EngineBuilder =======================================================
 
 /// Builder for configuring and constructing an [`Engine`].
 ///
 /// Provides a fluent API for setting engine parameters before construction.
-/// All configuration is optional except the input system.
+/// An empty [`InputSystem`] is automatically created.
 ///
 /// # Default Values
 ///
@@ -46,61 +41,62 @@ pub use crate::core::input::InputSystem;
 ///
 /// Simple usage with defaults:
 /// ```no_run
-/// use aetheric_engine::{Engine, InputSystem};
+/// use aetheric_engine::EngineBuilder;
 /// use aetheric_engine::core::input::Action;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// let input = InputSystem::<GameAction>::new();
-/// Engine::new(input).run();
+/// EngineBuilder::<GameAction>::new().build().run();
 /// ```
 ///
 /// Advanced configuration:
 /// ```no_run
-/// # use aetheric_engine::{EngineBuilder, InputSystem};
-/// # use aetheric_engine::core::input::{Action, KeyCode};
+/// # use aetheric_engine::EngineBuilder;
+/// # use aetheric_engine::core::input::Action;
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump }
 /// # impl Action for GameAction {}
-/// let input = InputSystem::<GameAction>::new()
-///     .with_binding(KeyCode::Space, GameAction::Jump);
 ///
-/// EngineBuilder::new()
-///     .with_input_system(input)
+/// EngineBuilder::<GameAction>::new()
 ///     .with_tps(120.0)              // High refresh rate
 ///     .with_channel_capacity(256)   // Extra buffering
 ///     .build()
 ///     .run();
 /// ```
+///
+/// With initialization:
+/// ```no_run
+/// # use aetheric_engine::EngineBuilder;
+/// # use aetheric_engine::core::input::Action;
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # enum GameAction { Jump }
+/// # impl Action for GameAction {}
+///
+/// EngineBuilder::<GameAction>::new()
+///     .with_tps(120.0)
+///     .build()
+///     .init(|ctx| {
+///         // Initialize game systems using resources
+///         ctx.input.bind_key(/* ... */);
+///     })
+///     .run();
+/// ```
 pub struct EngineBuilder<A: Action> {
-    input_system: Option<InputSystem<A>>,
     tps: f64,
     channel_capacity: usize,
+    _phantom: std::marker::PhantomData<A>,
 }
 
 impl<A: Action> EngineBuilder<A> {
     /// Creates a new builder with default settings.
-    ///
-    /// Input system must be provided via [`with_input_system`] before calling [`build`].
-    ///
-    /// [`with_input_system`]: Self::with_input_system
-    /// [`build`]: Self::build
     pub fn new() -> Self {
         Self {
-            input_system: None,
             tps: 60.0,
             channel_capacity: 128,
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    /// Sets the input system (required).
-    ///
-    /// The input system handles raw input events and maps them to game actions.
-    pub fn with_input_system(mut self, input_system: InputSystem<A>) -> Self {
-        self.input_system = Some(input_system);
-        self
     }
 
     /// Sets the target ticks per second for the logic thread.
@@ -114,13 +110,6 @@ impl<A: Action> EngineBuilder<A> {
     /// # Panics
     ///
     /// Panics if `tps <= 0.0`.
-    ///
-    /// # Typical Values
-    ///
-    /// - **30 TPS**: Low-power devices, turn-based games
-    /// - **60 TPS**: Standard for most games (16.67ms per tick)
-    /// - **120 TPS**: High refresh rate displays, competitive games
-    /// - **240+ TPS**: Server simulations, physics-heavy games
     pub fn with_tps(mut self, tps: f64) -> Self {
         assert!(tps > 0.0, "TPS must be positive, got {}", tps);
         self.tps = tps;
@@ -138,12 +127,6 @@ impl<A: Action> EngineBuilder<A> {
     /// # Panics
     ///
     /// Panics if `capacity == 0`.
-    ///
-    /// # Typical Values
-    ///
-    /// - **64**: Minimal buffering, low latency
-    /// - **128**: Standard (default), ~2 frames at 60 FPS
-    /// - **256+**: Heavy buffering for unstable frame rates
     pub fn with_channel_capacity(mut self, capacity: usize) -> Self {
         assert!(capacity > 0, "Channel capacity must be positive");
         self.channel_capacity = capacity;
@@ -152,16 +135,12 @@ impl<A: Action> EngineBuilder<A> {
 
     /// Builds the engine instance.
     ///
-    /// Consumes the builder and produces a configured [`Engine`] ready to run.
-    ///
-    /// # Panics
-    ///
-    /// Panics if input system was not provided via [`with_input_system`].
-    ///
-    /// [`with_input_system`]: Self::with_input_system
+    /// Consumes the builder and produces a configured [`Engine`] ready for
+    /// initialization or execution. Call [`Engine::init`] to initialize
+    /// resources before running, or call [`Engine::run`] directly.
+    /// An empty [`InputSystem`] is automatically created.
     pub fn build(self) -> Engine<A> {
-        let input_system = self.input_system
-            .expect("InputSystem is required. Call .with_input_system() before .build()");
+        let input_system = InputSystem::new();
 
         info!("Building engine (TPS: {}, channel: {})", self.tps, self.channel_capacity);
 
@@ -184,8 +163,7 @@ impl<A: Action> Default for EngineBuilder<A> {
 /// Aetheric Engine runtime.
 ///
 /// The engine coordinates all subsystems and manages the main execution loop.
-/// Create via [`EngineBuilder`] for advanced configuration, or use [`Engine::new`]
-/// for quick setup with defaults.
+/// Create via [`EngineBuilder`] with `EngineBuilder::new().build()`.
 ///
 /// # Architecture
 ///
@@ -204,28 +182,25 @@ impl<A: Action> Default for EngineBuilder<A> {
 ///
 /// Quick start:
 /// ```no_run
-/// use aetheric_engine::{Engine, InputSystem};
+/// use aetheric_engine::EngineBuilder;
 /// use aetheric_engine::core::input::Action;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// Engine::new(InputSystem::<GameAction>::new()).run();
+/// EngineBuilder::<GameAction>::new().build().run();
 /// ```
 ///
 /// With configuration:
 /// ```no_run
-/// # use aetheric_engine::{EngineBuilder, InputSystem};
-/// # use aetheric_engine::core::input::{Action, KeyCode};
+/// # use aetheric_engine::EngineBuilder;
+/// # use aetheric_engine::core::input::Action;
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump }
 /// # impl Action for GameAction {}
-/// let input = InputSystem::<GameAction>::new()
-///     .with_binding(KeyCode::Space, GameAction::Jump);
 ///
-/// EngineBuilder::new()
-///     .with_input_system(input)
+/// EngineBuilder::<GameAction>::new()
 ///     .with_tps(120.0)
 ///     .build()
 ///     .run();
@@ -237,22 +212,45 @@ pub struct Engine<A: Action> {
 }
 
 impl<A: Action> Engine<A> {
-    //--- Convenience Constructor ------------------------------------------
+    //--- Initialization ---------------------------------------------------
 
-    /// Creates an engine with default settings.
+    /// Initializes engine resources before execution.
     ///
-    /// Equivalent to:
-    /// ```ignore
-    /// EngineBuilder::new()
-    ///     .with_input_system(input_system)
+    /// Provides mutable access to [`GlobalResources`] for configuring
+    /// game systems (input bindings, ECS setup, etc.) before the engine
+    /// starts running.
+    ///
+    /// This method can only be called once before [`Engine::run`].
+    /// After calling `run`, the engine consumes itself and cannot be
+    /// reinitialized.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use aetheric_engine::EngineBuilder;
+    /// # use aetheric_engine::core::input::{Action, KeyCode};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Jump, Shoot }
+    /// # impl Action for GameAction {}
+    ///
+    /// EngineBuilder::<GameAction>::new()
     ///     .build()
+    ///     .init(|resources| {
+    ///         resources.input.bind_key(KeyCode::Space, GameAction::Jump);
+    ///         resources.input.bind_key(KeyCode::KeyF, GameAction::Shoot);
+    ///     })
+    ///     .run();
     /// ```
-    ///
-    /// For custom configuration (TPS, channel capacity), use [`EngineBuilder`].
-    pub fn new(input_system: InputSystem<A>) -> Self {
-        EngineBuilder::new()
-            .with_input_system(input_system)
-            .build()
+    pub fn init<F>(mut self, init_fn: F) -> Self
+    where
+        F: FnOnce(&mut GlobalResources<A>),
+    {
+        info!("Initializing engine resources");
+
+        self.orchestrator.init_resources(init_fn);
+
+        info!("Engine initialization complete");
+        self
     }
 
     //--- Execution --------------------------------------------------------
@@ -343,7 +341,6 @@ mod tests {
         let builder = EngineBuilder::<TestAction>::new();
         assert_eq!(builder.tps, 60.0);
         assert_eq!(builder.channel_capacity, 128);
-        assert!(builder.input_system.is_none());
     }
 
     #[test]
@@ -377,79 +374,18 @@ mod tests {
     }
 
     #[test]
-    fn builder_with_input_system() {
-        let input = InputSystem::<TestAction>::new();
-        let builder = EngineBuilder::new().with_input_system(input);
-        assert!(builder.input_system.is_some());
-    }
-
-    #[test]
     fn builder_build_creates_engine() {
-        let input = InputSystem::<TestAction>::new();
-        let _engine = EngineBuilder::new()
-            .with_input_system(input)
-            .build();
-    }
-
-    #[test]
-    #[should_panic(expected = "InputSystem is required")]
-    fn builder_build_panics_without_input() {
         let _engine = EngineBuilder::<TestAction>::new().build();
     }
 
     #[test]
     fn builder_fluent_api_chaining() {
-        let input = InputSystem::<TestAction>::new();
-
-        let engine = EngineBuilder::new()
+        let engine = EngineBuilder::<TestAction>::new()
             .with_tps(120.0)
             .with_channel_capacity(256)
-            .with_input_system(input)
             .build();
 
         assert_eq!(engine.tps, 120.0);
         assert_eq!(engine.channel_capacity, 256);
-    }
-
-    //=====================================================================
-    // Engine Convenience Constructor Tests
-    //=====================================================================
-
-    #[test]
-    fn engine_new_creates_with_defaults() {
-        let input = InputSystem::<TestAction>::new();
-        let engine = Engine::new(input);
-
-        assert_eq!(engine.tps, 60.0);
-        assert_eq!(engine.channel_capacity, 128);
-    }
-
-    #[test]
-    fn engine_new_equivalent_to_builder() {
-        let input1 = InputSystem::<TestAction>::new();
-        let input2 = InputSystem::<TestAction>::new();
-
-        let engine1 = Engine::new(input1);
-        let engine2 = EngineBuilder::new()
-            .with_input_system(input2)
-            .build();
-
-        assert_eq!(engine1.tps, engine2.tps);
-        assert_eq!(engine1.channel_capacity, engine2.channel_capacity);
-    }
-
-    //=====================================================================
-    // Integration with InputSystem
-    //=====================================================================
-
-    #[test]
-    fn builder_accepts_configured_input_system() {
-        let input = InputSystem::<TestAction>::new()
-            .with_binding(KeyCode::Space, TestAction::Jump)
-            .with_binding(KeyCode::KeyF, TestAction::Shoot);
-
-        let _engine = EngineBuilder::new()
-            .with_input_system(input)
-            .build();
     }
 }

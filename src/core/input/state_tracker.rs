@@ -23,7 +23,7 @@ use super::event::{Modifiers, InputEvent, KeyCode, MouseButton};
 
 /// Tracks persistent state (keys held) and per-frame deltas (keys pressed/released).
 /// Frame lifecycle: clear() → process_events() → finalize_frame() → query.
-pub struct StateTracker {
+pub(super) struct StateTracker {
     //--- Persistent State (survives frame boundary) ----------------------
     keys_down: HashSet<KeyCode>,
     mouse_buttons_down: HashSet<MouseButton>,
@@ -83,6 +83,7 @@ impl StateTracker {
         );
     }
 
+    //--- Internal Helpers -------------------------------------------------
     fn process_event(&mut self, event: &InputEvent) {
         match event {
             InputEvent::KeyDown { key, modifiers } => {

@@ -17,4 +17,5 @@ mod engine;
 
 //=== Public API ==========================================================
 
-pub use engine::{Engine, EngineBuilder, InputSystem};
+pub use core::{GlobalResources, InputSystem};
+pub use engine::{Engine, EngineBuilder};
