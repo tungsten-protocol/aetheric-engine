@@ -1,22 +1,21 @@
 //=========================================================================
 // Action Mapper
+//=========================================================================
 //
-// Maps raw input events to high-level game actions based on configured
-// bindings and the current input context.
+// Maps raw input events to game actions based on configured bindings and context.
 //
-// Responsibilities:
-// - Store key/mouse bindings for each context
-// - Resolve bindings considering modifier keys (Shift, Ctrl, Alt)
-// - Manage active context with O(1) switching
-// - Provide binding configuration API (add/remove/clear)
+// Architecture:
+//   (key/button, modifiers, context) → HashMap → Action
+//
+// Only bindings in the active context resolve to actions.
 //
 //=========================================================================
 
-//=== Standard Library Imports ============================================
+//=== External Dependencies ===============================================
 
 use std::collections::HashMap;
 
-//=== Internal Imports ====================================================
+//=== Internal Dependencies ===============================================
 
 use super::{
     action::{Action, InputContext},
@@ -25,67 +24,20 @@ use super::{
 
 //=== ActionMapper ========================================================
 
-/// Maps raw input events to actions based on configured bindings.
-///
-/// Only bindings in the current active context will be resolved.
-/// Bindings are identified by (input, modifiers, context) tuples for
-/// exact matching.
-///
-/// # Internal Structure
-///
-/// ```text
-/// Key Bindings:
-///   (KeyCode, Modifiers, Context) ──┐
-///                                   ├─→ HashMap<K, Action>
-/// Mouse Bindings:                   │    O(1) lookup
-///   (MouseButton, Modifiers, Ctx) ──┘
-///
-/// Current Context: Primary (or Custom)
-///   │
-///   └─→ Only this context's bindings resolve
-/// ```
-///
-/// # Examples
-///
-/// ```ignore
-/// let mut mapper = ActionMapper::new();
-///
-/// // Bind Space to Jump in gameplay context
-/// mapper.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
-///
-/// // Bind Ctrl+S to Save
-/// mapper.bind_key_with_mods(
-///     KeyCode::KeyS,
-///     Modifiers::CTRL,
-///     GameAction::Save,
-///     InputContext::Primary
-/// );
-///
-/// // Map events
-/// let event = InputEvent::KeyDown { key: KeyCode::Space, modifiers: Modifiers::NONE };
-/// if let Some(action) = mapper.map_event(&event) {
-///     // Action triggered!
-/// }
-/// ```
+/// Maps input events to actions via (key/button, modifiers, context) lookups.
+/// Only bindings in the active context resolve to actions.
 pub(crate) struct ActionMapper<A: Action> {
     /// Key bindings: (key, modifiers, context) → action
-    ///
-    /// Composite key ensures exact matching: Ctrl+S ≠ S, Context1 ≠ Context2
     key_bindings: HashMap<(KeyCode, Modifiers, InputContext), A>,
 
     /// Mouse button bindings: (button, modifiers, context) → action
     mouse_bindings: HashMap<(MouseButton, Modifiers, InputContext), A>,
 
     /// Currently active input context
-    ///
-    /// Only bindings matching this context will resolve to actions.
-    /// Changing context is O(1) - no data structure rebuilding required.
     current_context: InputContext,
 }
 
 impl<A: Action> ActionMapper<A> {
-    //--- Construction -----------------------------------------------------
-
     /// Creates a new mapper with Primary context active and no bindings.
     pub(crate) fn new() -> Self {
         Self {
@@ -96,10 +48,7 @@ impl<A: Action> ActionMapper<A> {
     }
 
     //--- Binding API ------------------------------------------------------
-
-    /// Binds a key to an action in the specified context.
-    ///
-    /// Replaces existing binding if present. Uses no modifiers (NONE).
+    /// Binds a key to an action (no modifiers).
     pub(crate) fn bind_key(
         &mut self,
         key: KeyCode,
@@ -109,10 +58,7 @@ impl<A: Action> ActionMapper<A> {
         self.bind_key_with_mods(key, Modifiers::NONE, action, context);
     }
 
-    /// Binds a key with modifiers to an action (modifiers must match exactly).
-    ///
-    /// Modifiers must match exactly for the binding to trigger. For example,
-    /// binding Ctrl+S will NOT match Ctrl+Shift+S.
+    /// Binds a key with modifiers to an action (exact match required).
     pub(crate) fn bind_key_with_mods(
         &mut self,
         key: KeyCode,
@@ -123,9 +69,7 @@ impl<A: Action> ActionMapper<A> {
         self.key_bindings.insert((key, modifiers, context), action);
     }
 
-    /// Binds a mouse button to an action in the specified context.
-    ///
-    /// Replaces existing binding if present. Uses no modifiers (NONE).
+    /// Binds a mouse button to an action (no modifiers).
     pub(crate) fn bind_mouse(
         &mut self,
         button: MouseButton,
@@ -136,8 +80,6 @@ impl<A: Action> ActionMapper<A> {
     }
 
     /// Binds a mouse button with modifiers to an action.
-    ///
-    /// Like key bindings, modifiers must match exactly.
     pub(crate) fn bind_mouse_with_mods(
         &mut self,
         button: MouseButton,
@@ -149,8 +91,6 @@ impl<A: Action> ActionMapper<A> {
     }
 
     /// Removes a specific key binding (exact modifier match).
-    ///
-    /// Only removes the binding with the exact modifier combination specified.
     pub(crate) fn unbind_key_with_mods(
         &mut self,
         key: KeyCode,
@@ -160,21 +100,12 @@ impl<A: Action> ActionMapper<A> {
         self.key_bindings.remove(&(key, modifiers, context));
     }
 
-    /// Removes key binding without modifiers only.
-    ///
-    /// **Important**: Does NOT remove bindings with modifiers. If you have
-    /// bindings for both `S` and `Ctrl+S`, this only removes `S`.
-    ///
-    /// Use [`unbind_key_with_mods`] for specific variants or
-    /// [`unbind_key_all_variants`] for complete removal.
+    /// Removes key binding without modifiers (does NOT remove modified variants).
     pub(crate) fn unbind_key(&mut self, key: KeyCode, context: InputContext) {
         self.unbind_key_with_mods(key, Modifiers::NONE, context);
     }
 
-    /// Removes ALL bindings for a key in the specified context, regardless of modifiers.
-    ///
-    /// This removes bindings with no modifiers, Shift, Ctrl, Alt, and any combination.
-    /// Use when you want to completely unbind a key.
+    /// Removes ALL bindings for a key in context (all modifier combinations).
     pub(crate) fn unbind_key_all_variants(
         &mut self,
         key: KeyCode,
@@ -183,7 +114,7 @@ impl<A: Action> ActionMapper<A> {
         self.key_bindings.retain(|&(k, _, ctx), _| !(k == key && ctx == context));
     }
 
-    /// Removes ALL bindings for a mouse button in the specified context, regardless of modifiers.
+    /// Removes ALL bindings for a mouse button in context (all modifier combinations).
     pub(crate) fn unbind_mouse_all_variants(
         &mut self,
         button: MouseButton,
@@ -202,29 +133,19 @@ impl<A: Action> ActionMapper<A> {
         self.mouse_bindings.remove(&(button, modifiers, context));
     }
 
-    /// Removes mouse button binding without modifiers only.
-    ///
-    /// Like [`unbind_key`], does NOT remove bindings with modifiers.
+    /// Removes mouse button binding without modifiers (does NOT remove modified variants).
     pub(crate) fn unbind_mouse(&mut self, button: MouseButton, context: InputContext) {
         self.unbind_mouse_with_mods(button, Modifiers::NONE, context);
     }
 
-    /// Clears all bindings for a specific context.
-    ///
-    /// Removes both key and mouse bindings. Other contexts remain unaffected.
+    /// Clears all bindings for a context (keys and mouse buttons).
     pub(crate) fn clear_context(&mut self, context: InputContext) {
         self.key_bindings.retain(|&(_, _, ctx), _| ctx != context);
         self.mouse_bindings.retain(|&(_, _, ctx), _| ctx != context);
     }
 
     //--- Event Mapping ----------------------------------------------------
-
-    /// Maps an input event to an action if a binding exists.
-    ///
-    /// Only checks the current active context. Returns `None` if:
-    /// - No binding exists for this input
-    /// - Event type doesn't support actions (MouseMoved, KeyUp, etc.)
-    /// - Wrong context is active
+    /// Maps an input event to an action in the active context.
     pub(crate) fn map_event(&self, event: &InputEvent) -> Option<A> {
         match event {
             InputEvent::KeyDown { key, modifiers } => {
@@ -238,29 +159,19 @@ impl<A: Action> ActionMapper<A> {
     }
 
     //--- Internal Mapping Helpers -----------------------------------------
-
-    /// Maps a key press to an action (internal helper).
-    ///
-    /// Exported as `pub(super)` for use by InputSystem's action generation.
+    /// Maps a key press to an action.
     pub(super) fn map_key(&self, key: KeyCode, modifiers: Modifiers) -> Option<A> {
         let binding_key = (key, modifiers, self.current_context);
         self.key_bindings.get(&binding_key).copied()
     }
 
-    /// Maps a button press to an action (internal helper).
-    ///
-    /// Exported as `pub(super)` for use by InputSystem's action generation.
+    /// Maps a mouse button press to an action.
     pub(super) fn map_button(&self, btn: MouseButton, modifiers: Modifiers) -> Option<A> {
         let binding_key = (btn, modifiers, self.current_context);
         self.mouse_bindings.get(&binding_key).copied()
     }
 
-    //--- Context Management -----------------------------------------------
-
     /// Sets the active input context.
-    ///
-    /// Only bindings in the active context will resolve to actions.
-    /// Switching is O(1) - no data structure changes required.
     pub(crate) fn set_context(&mut self, context: InputContext) {
         self.current_context = context;
     }

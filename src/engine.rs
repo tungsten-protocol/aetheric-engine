@@ -14,20 +14,21 @@
 //
 //=========================================================================
 
-//=== External Crates =====================================================
+//=== External Dependencies ===============================================
 
-use crossbeam_channel::{bounded, Sender, Receiver};
-use log::{info, error};
+use crossbeam_channel::{bounded, Receiver, Sender};
+use log::{error, info};
 
-//=== Internal Modules ====================================================
+//=== Internal Dependencies ===============================================
 
-use crate::core::{input, CoreSystemsOrchestrator};
-use crate::platform::{Platform, PlatformEvent};
 use crate::core::input::Action;
+use crate::core::platform_bridge::PlatformEvent;
+use crate::core::CoreSystemsOrchestrator;
+use crate::platform::Platform;
 
-//=== Public Re-exports ===================================================
+//=== Public API ==========================================================
 
-pub use input::InputSystem;
+pub use crate::core::input::InputSystem;
 
 //=== EngineBuilder =======================================================
 
@@ -288,10 +289,12 @@ impl<A: Action> Engine<A> {
         info!("Core logic thread spawned");
 
         //--- 3. Launch the platform subsystem -----------------------------
-        let mut platform = Platform::new(tx);
+        let platform = Platform::new(tx);
         info!("Platform initialized, entering event loop");
 
-        platform.run(); // Blocks until window close
+        if let Err(e) = platform.run() {
+            error!("Platform error: {:?}", e);
+        }
 
         info!("Platform event loop exited");
 

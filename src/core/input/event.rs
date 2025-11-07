@@ -1,53 +1,22 @@
 //=========================================================================
-// System Event Types
+// Input Event Types
+//=========================================================================
 //
-// Defines the internal representation of low-level input events.
+// Low-level input event types with platform-agnostic representation.
 //
-// This module abstracts away platform-specific input (e.g. Winit, SDL)
-// into a unified, engine-friendly format used by the input subsystem.
-//
-// Responsibilities:
-// - Represent keyboard and mouse inputs in a stable, portable way
-// - Provide equality and hashing semantics for deduplication
-// - Support modifier key combinations (Shift, Ctrl, Alt)
-// - Enable event coalescing (e.g., multiple MouseMoved → last position)
-//
-// Design:
-// Events are designed to be:
-// - Copy-cheap for enums (KeyCode, MouseButton, Modifiers)
-// - Clone-cheap for InputEvent (no heap allocations)
-// - Hash-stable for efficient HashSet/HashMap usage
-//
-// Event Flow:
-// ```text
-// Platform Layer (Winit)
-//         ↓
-//    InputEvent (this module)
-//         ↓
-//    StateTracker (processes events)
-//         ↓
-//    Actions (high-level game input)
-// ```
+// Hash-stable semantics: MouseMoved events hash/compare by discriminant only
+// (coordinates ignored for coalescing). Modifiers must match exactly in
+// bindings (Ctrl+S ≠ Ctrl+Shift+S).
 //
 //=========================================================================
 
-//=== Standard Library Imports ============================================
+//=== External Dependencies ===============================================
 
 use std::hash::{Hash, Hasher};
 
 //=== MouseButton =========================================================
 
 /// Physical mouse button identifier.
-///
-/// Abstracts platform-specific button representations (e.g., Winit's
-/// `MouseButton`, SDL's button codes) into a stable, portable enum.
-///
-/// Platform mapping typically:
-/// - Winit: `MouseButton::Left` → `winit::event::MouseButton::Left`
-/// - SDL: Button index 1 → `MouseButton::Left`
-///
-/// The `Other` variant covers side buttons, macro buttons, and any
-/// non-standard inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     /// Primary button (typically left).
@@ -65,21 +34,7 @@ pub enum MouseButton {
 
 //=== KeyCode =============================================================
 
-/// Physical keyboard key identifier.
-///
-/// Represents the physical key location, not the character produced.
-/// For example, `KeyA` is always the same physical key regardless of
-/// keyboard layout (QWERTY vs AZERTY).
-///
-/// Coverage:
-/// - Alphanumeric keys (A-Z, 0-9)
-/// - Arrow keys
-/// - Common special keys (Space, Enter, Escape, etc.)
-///
-/// Platform mapping:
-/// - Winit: Uses `winit::keyboard::KeyCode`
-///
-/// Additional keys can be added as needed without breaking existing code.
+/// Physical keyboard key identifier (location-based, not character-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyCode {
     //--- Numeric Keys -----------------------------------------------------
@@ -123,40 +78,14 @@ pub enum KeyCode {
     /// Delete key
     Delete,
 
-    /// Fallback for keys not explicitly mapped by the input layer.
-    ///
-    /// Used when the platform reports a key that isn't in the enum.
-    /// Typically rare, as most common keys are covered.
+    /// Fallback for unmapped keys.
     Unidentified
 }
 
 //=== InputEvent ==========================================================
 
 /// Low-level input event from the platform layer.
-///
-/// Events carry both the input type (key/button/mouse) and associated
-/// data (which key, modifier state, position).
-///
-/// # Equality & Hashing Semantics
-///
-/// Events are compared by type + payload (key/button + modifiers).
-/// Special case: `MouseMoved` events are equal regardless of coordinates,
-/// allowing efficient coalescing (last position wins).
-///
-/// ```text
-/// Equality Rules:
-/// KeyDown{A, CTRL} == KeyDown{A, CTRL}       ✓
-/// KeyDown{A, CTRL} == KeyDown{A, SHIFT}      ✗ (different mods)
-/// KeyDown{A}       == KeyUp{A}               ✗ (different type)
-/// MouseMoved{...}  == MouseMoved{...}        ✓ (always equal)
-/// ```
-///
-/// # Event Types
-///
-/// - **KeyDown/KeyUp**: Discrete keyboard events with modifier state
-/// - **MouseButtonDown/MouseButtonUp**: Discrete mouse button events
-/// - **MouseMoved**: Continuous cursor position updates
-/// - **Unidentified**: Unknown/unsupported events (ignored by system)
+/// MouseMoved events hash/compare by discriminant only (coordinates ignored for coalescing).
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     /// Key pressed down.
@@ -183,28 +112,18 @@ pub enum InputEvent {
         modifiers: Modifiers,
     },
 
-    /// Mouse cursor moved to new position.
-    ///
-    /// Coordinates are in screen space (pixels, top-left origin).
-    /// Multiple consecutive MouseMoved events are typically coalesced
-    /// by the platform layer before reaching the input system.
+    /// Mouse cursor moved (screen space, pixels, top-left origin).
     MouseMoved { x: f32, y: f32 },
 
-    /// Unrecognized or unsupported event.
-    ///
-    /// These are silently ignored by the input system. Used for forward
-    /// compatibility when new platform events are added.
+    /// Unrecognized event (silently ignored).
     Unidentified
 }
 
 //--- Implementation ------------------------------------------------------
 
 impl InputEvent {
-    /// Returns a new event with updated modifiers (consumes self).
-    ///
-    /// Useful for normalizing modifier state when platform reports are
-    /// inconsistent. Has no effect on `MouseMoved` and `Unidentified`.
-    pub fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
+    /// Returns a new event with updated modifiers (internal utility).
+    pub(crate) fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
         match &mut self {
             Self::KeyDown { modifiers: m, .. }
             | Self::KeyUp { modifiers: m, .. }
@@ -220,13 +139,7 @@ impl InputEvent {
 
 //--- Trait Implementations -----------------------------------------------
 
-/// Equality implementation for InputEvent.
-///
-/// Rules:
-/// - Same discriminant (KeyDown vs KeyUp, etc.)
-/// - Same key/button payload
-/// - Same modifier state
-/// - MouseMoved always equal (coordinates ignored for coalescing)
+/// Equality by discriminant + payload. MouseMoved always equal (coordinates ignored).
 impl PartialEq for InputEvent {
     fn eq(&self, other: &Self) -> bool {
         use InputEvent::*;
@@ -259,13 +172,7 @@ impl PartialEq for InputEvent {
 
 impl Eq for InputEvent {}
 
-/// Hash implementation for InputEvent.
-///
-/// Hashes discriminant + key/button + modifiers. Coordinates are NOT
-/// hashed for MouseMoved (consistent with equality).
-///
-/// This allows efficient HashSet/HashMap usage while respecting the
-/// equality contract (a == b → hash(a) == hash(b)).
+/// Hashes by discriminant + payload. MouseMoved coordinates not hashed (consistent with equality).
 impl Hash for InputEvent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Hash the discriminant first (event type)
@@ -290,35 +197,12 @@ impl Hash for InputEvent {
 
 //=== Modifiers ===========================================================
 
-/// Modifier key state (Shift, Ctrl, Alt).
-///
-/// Used to distinguish key combinations like Ctrl+S from plain S.
-/// All combinations are pre-defined as constants for convenience.
-///
-/// # Platform Mapping
-///
-/// - **Shift**: Left Shift OR Right Shift
-/// - **Ctrl**: Left Ctrl OR Right Ctrl (Command on macOS)
-/// - **Alt**: Left Alt OR Right Alt (Option on macOS)
-///
-/// The system does not distinguish between left/right variants.
-///
-/// # Usage in Bindings
-///
-/// Modifiers must match exactly for a binding to trigger:
-/// - Binding `Ctrl+S` will NOT match `Ctrl+Shift+S`
-/// - Binding `S` will NOT match `Ctrl+S`
-///
-/// This ensures predictable behavior and avoids accidental triggers.
+/// Modifier key state. Does not distinguish left/right variants.
+/// Modifiers must match exactly in bindings (Ctrl+S ≠ Ctrl+Shift+S).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Modifiers {
-    /// Shift key held (either left or right).
     pub shift: bool,
-
-    /// Ctrl key held (either left or right, Command on macOS).
     pub ctrl: bool,
-
-    /// Alt key held (either left or right, Option on macOS).
     pub alt: bool,
 }
 

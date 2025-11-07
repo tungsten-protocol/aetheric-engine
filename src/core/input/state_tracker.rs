@@ -1,134 +1,49 @@
 //=========================================================================
 // State Tracker
+//=========================================================================
 //
-// Low-level input state tracking across frames.
-//
-// Maintains both persistent state (keys/buttons currently held) and
-// frame deltas (transitions that occurred this frame) for efficient
-// querying by the input system.
+// Low-level input state tracking with per-frame delta tracking.
 //
 // Architecture:
-// ```text
-// State Tracker Lifecycle (per frame):
+//   InputEvent → process_events() → HashSet (keys/buttons held) → query
 //
-//   1. clear()
-//      ├─► Clears pressed/released deltas
-//      └─► Saves last_mouse_position
-//
-//   2. process_events(&[batch1, batch2, ...])
-//      ├─► Updates keys_down (persistent)
-//      ├─► Updates keys_pressed_this_frame (delta)
-//      └─► Updates modifiers
-//
-//   3. finalize_frame()
-//      └─► Calculates mouse_delta
-//
-// Data Organization:
-// ┌──────────────────────────────────────┐
-// │       StateTracker                   │
-// ├──────────────────────────────────────┤
-// │ Persistent State:                    │
-// │  • keys_down            (HashSet)    │
-// │  • mouse_buttons_down   (HashSet)    │
-// │  • mouse_position       (f32, f32)   │
-// │  • modifiers            (struct)     │
-// ├──────────────────────────────────────┤
-// │ Frame Deltas (reset each frame):     │
-// │  • keys_pressed_this_frame           │
-// │  • keys_released_this_frame          │
-// │  • mouse_buttons_pressed_this_frame  │
-// │  • mouse_buttons_released_this_frame │
-// ├──────────────────────────────────────┤
-// │ Continuous Input:                    │
-// │  • mouse_delta (calculated)          │
-// │  • last_mouse_position (tracking)    │
-// └──────────────────────────────────────┘
+// Frame lifecycle: clear() → process_events() → finalize_frame() → query
 //
 //=========================================================================
 
-//=== Internal Imports ====================================================
+//=== External Dependencies ===============================================
+
+use std::collections::HashSet;
+
+//=== Internal Dependencies ===============================================
 
 use super::event::{Modifiers, InputEvent, KeyCode, MouseButton};
-use std::collections::HashSet;
 
 //=== StateTracker ========================================================
 
-/// Low-level input state tracker.
-///
-/// Processes raw input events and maintains queryable state for both
-/// persistent conditions (keys held) and frame transitions (keys pressed).
-///
-/// # Usage
-///
-/// Call in this order each frame:
-/// 1. [`clear()`](Self::clear) - Reset deltas
-/// 2. [`process_events()`](Self::process_events) - Update from events
-/// 3. [`finalize_frame()`](Self::finalize_frame) - Calculate derived values
-/// 4. Query state via `is_key_*()` methods
-///
-/// # Internal Use Only
-///
-/// This type is `pub(crate)` - it's used by [`InputSystem`] but not exposed
-/// to game code. Games should use [`InputSystem`]'s query methods instead.
-pub(crate) struct StateTracker {
+/// Tracks persistent state (keys held) and per-frame deltas (keys pressed/released).
+/// Frame lifecycle: clear() → process_events() → finalize_frame() → query.
+pub struct StateTracker {
     //--- Persistent State (survives frame boundary) ----------------------
-
-    /// Keys currently held down.
-    ///
-    /// Updated on KeyDown (insert) and KeyUp (remove). Persists across
-    /// frames until explicitly released.
     keys_down: HashSet<KeyCode>,
-
-    /// Mouse buttons currently held down.
     mouse_buttons_down: HashSet<MouseButton>,
-
-    /// Current mouse position in screen coordinates (pixels, top-left origin).
     mouse_position: (f32, f32),
-
-    /// Current modifier key state (Shift, Ctrl, Alt).
-    ///
-    /// Updated on every key/button event. Reflects the most recent modifier
-    /// state reported by the platform.
     modifiers: Modifiers,
 
     //--- Frame Deltas (reset each frame via clear()) --------------------
-
-    /// Keys that transitioned UP → DOWN this frame.
-    ///
-    /// Only contains keys that were NOT down last frame. Used for discrete
-    /// actions like jumping or toggling menus.
     keys_pressed_this_frame: HashSet<KeyCode>,
-
-    /// Keys that transitioned DOWN → UP this frame.
     keys_released_this_frame: HashSet<KeyCode>,
-
-    /// Mouse buttons that transitioned UP → DOWN this frame.
     mouse_buttons_pressed_this_frame: HashSet<MouseButton>,
-
-    /// Mouse buttons that transitioned DOWN → UP this frame.
     mouse_buttons_released_this_frame: HashSet<MouseButton>,
 
     //--- Continuous Input (accumulated/calculated) -----------------------
-
-    /// Mouse movement delta for this frame.
-    ///
-    /// Calculated in [`finalize_frame()`](Self::finalize_frame) as:
-    /// `mouse_position - last_mouse_position`.
     mouse_delta: (f32, f32),
-
-    /// Mouse position at the start of this frame.
-    ///
-    /// Used to calculate `mouse_delta`. Updated in [`clear()`](Self::clear).
     last_mouse_position: (f32, f32),
 }
 
 impl StateTracker {
-    //--- Construction -----------------------------------------------------
-
     /// Creates a new state tracker with empty state.
-    ///
-    /// All keys/buttons are unpressed, mouse is at origin, no modifiers held.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             keys_down: HashSet::new(),
             mouse_buttons_down: HashSet::new(),
@@ -144,24 +59,8 @@ impl StateTracker {
     }
 
     //--- Frame Processing -------------------------------------------------
-
-    /// Clears frame-specific deltas in preparation for new events.
-    ///
-    /// **Must be called at the start of each frame** before processing events.
-    ///
-    /// Clears:
-    /// - `keys_pressed_this_frame`
-    /// - `keys_released_this_frame`
-    /// - `mouse_buttons_pressed_this_frame`
-    /// - `mouse_buttons_released_this_frame`
-    ///
-    /// Preserves:
-    /// - `keys_down` (persistent state)
-    /// - `mouse_buttons_down`
-    /// - `modifiers`
-    ///
-    /// Also updates `last_mouse_position` for delta calculation.
-    pub(crate) fn clear(&mut self) {
+    /// Clears frame-specific deltas.
+    pub(super) fn clear(&mut self) {
         self.keys_pressed_this_frame.clear();
         self.keys_released_this_frame.clear();
         self.mouse_buttons_pressed_this_frame.clear();
@@ -169,39 +68,21 @@ impl StateTracker {
         self.last_mouse_position = self.mouse_position;
     }
 
-    /// Processes a batch of input events.
-    ///
-    /// Updates both persistent state (keys_down) and frame deltas
-    /// (keys_pressed_this_frame). Call once per event batch.
-    ///
-    /// Multiple batches can be processed per frame (e.g., discrete events
-    /// followed by continuous events).
-    pub(crate) fn process_events(&mut self, events: &[InputEvent]) {
+    /// Processes input events.
+    pub(super) fn process_events(&mut self, events: &[InputEvent]) {
         for event in events {
             self.process_event(event);
         }
     }
 
-    /// Finalizes frame calculations after all events are processed.
-    ///
-    /// **Must be called after all event batches** and before querying state.
-    ///
-    /// Currently calculates:
-    /// - `mouse_delta` = `mouse_position - last_mouse_position`
-    pub(crate) fn finalize_frame(&mut self) {
+    /// Finalizes frame calculations (calculates mouse delta).
+    pub(super) fn finalize_frame(&mut self) {
         self.mouse_delta = (
             self.mouse_position.0 - self.last_mouse_position.0,
             self.mouse_position.1 - self.last_mouse_position.1,
         );
     }
 
-    //--- Internal Helpers -------------------------------------------------
-
-    /// Processes a single input event.
-    ///
-    /// Updates state based on event type. Only tracks transitions for
-    /// pressed/released - duplicate events are ignored (e.g., KeyDown
-    /// while already down).
     fn process_event(&mut self, event: &InputEvent) {
         match event {
             InputEvent::KeyDown { key, modifiers } => {
@@ -247,119 +128,106 @@ impl StateTracker {
     //=====================================================================
     // Query API - Keyboard
     //=====================================================================
-
-    /// Returns `true` if the key transitioned from UP to DOWN this frame.
-    ///
-    /// Only true on the frame the key was first pressed. Use [`is_key_down`]
-    /// for continuous input (held keys).
-    ///
-    /// Use for discrete actions: jump, interact, toggle menu.
-    pub(crate) fn is_key_pressed(&self, key: KeyCode) -> bool {
+    /// Returns true if the key transitioned from UP to DOWN this frame.
+    pub fn is_key_pressed(&self, key: KeyCode) -> bool {
         self.keys_pressed_this_frame.contains(&key)
     }
 
-    /// Returns `true` while the key is held down.
-    ///
-    /// True on every frame from press until release (inclusive of first frame).
-    ///
-    /// Use for continuous actions: movement, charging attacks.
-    pub(crate) fn is_key_down(&self, key: KeyCode) -> bool {
+    /// Returns true while the key is held down.
+    pub fn is_key_down(&self, key: KeyCode) -> bool {
         self.keys_down.contains(&key)
     }
 
-    /// Returns `true` if the key transitioned from DOWN to UP this frame.
-    ///
-    /// Use for release-dependent actions: end charge attack.
-    pub(crate) fn is_key_released(&self, key: KeyCode) -> bool {
+    /// Returns true if the key transitioned from DOWN to UP this frame.
+    pub fn is_key_released(&self, key: KeyCode) -> bool {
         self.keys_released_this_frame.contains(&key)
     }
 
     //=====================================================================
     // Query API - Mouse Buttons
     //=====================================================================
-
-    /// Returns `true` if the button transitioned from UP to DOWN this frame.
-    pub(crate) fn is_button_pressed(&self, button: MouseButton) -> bool {
+    /// Returns true if the button transitioned from UP to DOWN this frame.
+    pub fn is_button_pressed(&self, button: MouseButton) -> bool {
         self.mouse_buttons_pressed_this_frame.contains(&button)
     }
 
-    /// Returns `true` while the button is held down.
-    pub(crate) fn is_button_down(&self, button: MouseButton) -> bool {
+    /// Returns true while the button is held down.
+    pub fn is_button_down(&self, button: MouseButton) -> bool {
         self.mouse_buttons_down.contains(&button)
     }
 
-    /// Returns `true` if the button transitioned from DOWN to UP this frame.
-    pub(crate) fn is_button_released(&self, button: MouseButton) -> bool {
+    /// Returns true if the button transitioned from DOWN to UP this frame.
+    pub fn is_button_released(&self, button: MouseButton) -> bool {
         self.mouse_buttons_released_this_frame.contains(&button)
     }
 
     //=====================================================================
     // Query API - Mouse Position & Movement
     //=====================================================================
-
-    /// Returns the current mouse position in screen coordinates.
-    ///
-    /// Coordinates are in pixels with origin at top-left (0,0).
-    pub(crate) fn mouse_position(&self) -> (f32, f32) {
+    /// Returns the current mouse position (pixels, top-left origin).
+    pub fn mouse_position(&self) -> (f32, f32) {
         self.mouse_position
     }
 
     /// Returns the mouse movement delta for this frame.
-    ///
-    /// `(0.0, 0.0)` if mouse didn't move. Positive x = right, positive y = down.
-    ///
-    /// Useful for camera control, drag operations, cursor acceleration.
-    pub(crate) fn mouse_delta(&self) -> (f32, f32) {
+    pub fn mouse_delta(&self) -> (f32, f32) {
         self.mouse_delta
     }
+
 
     //=====================================================================
     // Query API - Modifiers
     //=====================================================================
-
     /// Returns the current modifier key state.
-    pub(crate) fn modifiers(&self) -> Modifiers {
+    pub fn modifiers(&self) -> Modifiers {
         self.modifiers
     }
 
-    /// Returns `true` if Shift is currently held.
-    pub(crate) fn shift_held(&self) -> bool {
+    /// Returns true if Shift is held.
+    pub fn shift_held(&self) -> bool {
         self.modifiers.shift
     }
 
-    /// Returns `true` if Ctrl is currently held.
-    pub(crate) fn ctrl_held(&self) -> bool {
+    /// Returns true if Ctrl is held.
+    pub fn ctrl_held(&self) -> bool {
         self.modifiers.ctrl
     }
 
-    /// Returns `true` if Alt is currently held.
-    pub(crate) fn alt_held(&self) -> bool {
+    /// Returns true if Alt is held.
+    pub fn alt_held(&self) -> bool {
         self.modifiers.alt
     }
 
     //=====================================================================
     // Query API - Iteration
     //=====================================================================
-
+    /// Returns an iterator over all keys currently held.
+    pub fn keys_down(&self) -> impl Iterator<Item = &KeyCode> {
+        self.keys_down.iter()
+    }
+    
     /// Returns an iterator over all keys pressed this frame.
-    ///
-    /// Useful for action mapping systems that need to check all inputs.
-    pub(crate) fn keys_pressed(&self) -> impl Iterator<Item = &KeyCode> {
+    pub fn keys_pressed(&self) -> impl Iterator<Item = &KeyCode> {
         self.keys_pressed_this_frame.iter()
     }
 
     /// Returns an iterator over all keys released this frame.
-    pub(crate) fn keys_released(&self) -> impl Iterator<Item = &KeyCode> {
+    pub fn keys_released(&self) -> impl Iterator<Item = &KeyCode> {
         self.keys_released_this_frame.iter()
     }
 
+    /// Returns an iterator over all mouse buttons currently pressed.
+    pub fn buttons_down(&self) -> impl Iterator<Item = &MouseButton> {
+        self.mouse_buttons_down.iter()
+    }
+
     /// Returns an iterator over all mouse buttons pressed this frame.
-    pub(crate) fn buttons_pressed(&self) -> impl Iterator<Item = &MouseButton> {
+    pub fn buttons_pressed(&self) -> impl Iterator<Item = &MouseButton> {
         self.mouse_buttons_pressed_this_frame.iter()
     }
 
     /// Returns an iterator over all mouse buttons released this frame.
-    pub(crate) fn buttons_released(&self) -> impl Iterator<Item = &MouseButton> {
+    pub fn buttons_released(&self) -> impl Iterator<Item = &MouseButton> {
         self.mouse_buttons_released_this_frame.iter()
     }
 }

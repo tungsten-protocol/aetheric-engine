@@ -1,111 +1,78 @@
 //=========================================================================
 // Input System
+//=========================================================================
 //
-// Unified input handling system for the engine.
-// Maintains both persistent state (what's currently held) and frame deltas
-// (what changed this frame) for efficient querying.
+// Unified input handling: raw state tracking + action mapping via bindings.
 //
-// Responsibilities:
-// - Process batches of raw input events each frame
-// - Track persistent state (keys/buttons currently down)
-// - Track frame transitions (pressed/released this frame)
-// - Accumulate continuous input (mouse movement)
-// - Map raw input to high-level game actions via bindings
-// - Provide high-level query API for gameplay code
+// Architecture:
+//   InputEvent → StateTracker (keys/mouse state) → ActionMapper (bindings) → Actions
 //
-// Design Philosophy:
-// - Separation: Raw state (StateTracker) vs semantic actions (ActionMapper)
-// - Flexibility: Runtime rebinding + compile-time fluent API
-// - Performance: Frame-local allocations, HashSet deduplication O(1)
-// - Type safety: Generic over Action type, ensuring compile-time correctness
-//
-// Processing Model:
-// The system operates on a "pull" model: game code processes events once
-// per frame by calling process_frame(), then queries actions/state.
-// State persists between frames (keys held), but deltas reset each frame
-// (pressed/released flags).
+// Each frame: clear deltas → process events → finalize → generate actions
 //
 //=========================================================================
 
-//=== Submodules ==========================================================
+//=== External Dependencies ===============================================
+
+use std::collections::HashSet;
+
+//=== Internal Dependencies ===============================================
+
+use action_mapper::ActionMapper;
+use state_tracker::StateTracker;
+
+//=== Module Declarations =================================================
 
 pub mod action;
 pub mod event;
 
-mod state_tracker;
 mod action_mapper;
+mod state_tracker;
 
-//=== Public Re-exports ===================================================
+//=== Public API ==========================================================
 
 pub use action::{Action, InputContext};
-pub use event::{KeyCode, MouseButton, Modifiers};
+pub use event::{KeyCode, Modifiers, MouseButton};
+
+//=== Internal API ========================================================
+
 pub(crate) use event::InputEvent;
-
-//=== Standard Library Imports ============================================
-
-use std::collections::HashSet;
-
-//=== Internal Imports ====================================================
-
-use state_tracker::StateTracker;
-use action_mapper::ActionMapper;
 
 //=== InputSystem =========================================================
 
 /// Unified input handling system coordinating state tracking and action mapping.
 ///
-/// # Architecture
-///
-/// ```text
-/// ┌─────────────────────────────────────────────────────┐
-/// │               InputSystem<A>                        │
-/// │                                                     │
-/// │  ┌──────────────────┐      ┌────────────────────┐   │
-/// │  │  StateTracker    │      │ ActionMapper<A>    │   │
-/// │  │                  │      │                    │   │
-/// │  │ • Keys down      │      │ • Key bindings     │   │
-/// │  │ • Buttons down   │      │ • Mouse bindings   │   │
-/// │  │ • Mouse pos/delta│      │ • Active context   │   │
-/// │  │ • Modifiers      │      │                    │   │
-/// │  │ • Frame deltas   │      │ (Key+Mods) → Action│   │
-/// │  └──────────────────┘      └────────────────────┘   │
-/// │           ↓                         ↓               │
-/// │           └────────┬────────────────┘               │
-/// │                    ↓                                │
-/// │            current_actions: Vec<A>                  │
-/// └─────────────────────────────────────────────────────┘
-/// ```
-///
-/// # Query Levels
+/// Provides three query levels:
 ///
 /// 1. **Actions** (high-level): Game-defined semantic actions from bindings
 /// 2. **Raw State** (mid-level): Direct key/button pressed/down/released queries
 /// 3. **Mouse** (low-level): Position, delta, and button states
 ///
-/// # Processing Pipeline
-///
-/// Each frame (`process_frame`):
-/// 1. Clear previous frame's deltas (pressed/released flags)
-/// 2. Process all event batches → update state
-/// 3. Finalize continuous inputs (mouse delta calculation)
-/// 4. Generate actions via current context bindings
-///
-/// # Examples
+/// # Usage Pattern
 ///
 /// ```
-/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode, InputContext};
+/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode};
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump, Shoot, Interact }
 /// impl Action for GameAction {}
+///
+/// # // Hidden setup for doc test compilation
+/// # struct Player;
+/// # impl Player {
+/// #     fn jump(&self) {}
+/// #     fn shoot(&self) {}
+/// #     fn interact(&self) {}
+/// #     fn move_forward(&self) {}
+/// # }
+/// # let player = Player;
 ///
 /// // Setup with fluent API
 /// let mut input = InputSystem::<GameAction>::new()
 ///     .with_binding(KeyCode::Space, GameAction::Jump)
 ///     .with_binding(KeyCode::KeyF, GameAction::Shoot);
 ///
-/// // Each frame: process events
-/// input.process_frame(&events);
+/// // Each frame: process events (handled automatically by the engine)
+/// // input.process_frame(&platform_events);
 ///
 /// // Query actions
 /// for action in input.actions() {

@@ -1,110 +1,37 @@
 //=========================================================================
 // Input Buffer
+//=========================================================================
 //
-// Aggregates input events per frame into discrete and continuous categories.
+// Per-frame input buffer with discrete and continuous event storage.
 //
-// Data Structure:
-// ```text
-// InputBuffer
-// ├── discrete: Vec<InputEvent>
-// │   ├─ KeyDown{A}
-// │   ├─ KeyDown{B}     ← Order preserved
-// │   ├─ KeyDown{A}     ← Non-consecutive duplicate OK
-// │   └─ MouseButtonDown{Left}
-// │
-// └── continuous: HashSet<InputEvent>
-//     └─ MouseMoved{x:100, y:200}  ← Only latest (size = 0 or 1)
+// Architecture:
+//   Discrete: Vec (order-preserved, consecutive dedup)
+//   Continuous: HashSet (coalesced, latest-wins)
 //
-// Deduplication Strategy:
-// - Discrete: Last element check (O(1) for consecutive)
-// - Continuous: HashSet::replace (O(1) via hash-by-discriminant)
-//
-// HashSet Trick:
-//   MouseMoved{x:10, y:10}.hash() == MouseMoved{x:99, y:88}.hash()
-//   ↓
-//   .replace() automatically keeps latest coordinates
-// ```
-//
-// Memory Management:
-// - Initial capacity: 128 discrete, 1 continuous
-// - Capacity preserved across drain() calls (avoids realloc)
-// - Typical frame: 5-10 discrete, 0-1 continuous
+// Discrete handles keys/buttons, continuous handles mouse movement.
 //
 //=========================================================================
 
-//=== Internal Imports ====================================================
+//=== External Dependencies ===============================================
 
 use std::collections::HashSet;
 use std::mem;
+
+//=== Internal Dependencies ===============================================
+
 use crate::core::input::event::InputEvent;
 
 //=== InputBuffer =========================================================
 
-/// Temporary storage for input events within a single frame.
-///
-/// Events are categorized into two buffers based on their semantics:
-///
-/// # Discrete Events
-///
-/// Stored in a `Vec` to preserve order (critical for correct action mapping).
-/// Consecutive duplicates are filtered to avoid redundant processing:
-///
-/// ```ignore
-/// push_discrete(KeyDown{A})
-/// push_discrete(KeyDown{A})  // Ignored (duplicate)
-/// push_discrete(KeyDown{B})
-/// push_discrete(KeyDown{A})  // Allowed (non-consecutive)
-/// ```
-///
-/// # Continuous Events
-///
-/// Stored in a `HashSet` that exploits hash-by-discriminant semantics.
-/// Only the **latest** event of each type is kept:
-///
-/// ```ignore
-/// push_continuous(MouseMoved{x:10, y:10})
-/// push_continuous(MouseMoved{x:20, y:30})  // Replaces previous
-/// // Result: Only MouseMoved{x:20, y:30} remains
-/// ```
-///
-/// This works because `InputEvent` hashes by discriminant (event type),
-/// not payload. See `InputEvent::hash()` implementation for details.
-///
-/// # Memory Management
-///
-/// - Initial capacities: 128 discrete, 1 continuous
-/// - Capacities preserved across [`drain()`](Self::drain) calls
-/// - Avoids per-frame allocations in steady state
-///
-/// # Visibility
-///
-/// This type is `pub(super)` - visible only within the platform module.
-/// It's an internal optimization detail, not part of the public API.
+/// Per-frame input buffer with order-preserving discrete storage and coalescing continuous storage.
+/// Discrete: Vec with consecutive deduplication. Continuous: HashSet with latest-wins replacement.
 pub(super) struct InputBuffer {
-    /// Discrete events (keys, buttons) in insertion order.
-    ///
-    /// Consecutive duplicates are filtered on insertion.
-    /// Typical capacity: 128 elements (resizable).
     discrete: Vec<InputEvent>,
-
-    /// Continuous events (mouse position) with automatic coalescing.
-    ///
-    /// HashSet::replace keeps only latest event per discriminant.
-    /// Typical size: 0-1 elements (MouseMoved or empty).
     continuous: HashSet<InputEvent>,
 }
 
 impl InputBuffer {
-    //--- Construction -----------------------------------------------------
-
-    /// Creates buffer with capacity tuned for typical gameplay.
-    ///
-    /// Initial capacities:
-    /// - Discrete: 128 events (handles burst input)
-    /// - Continuous: 1 event (only MouseMoved in practice)
-    ///
-    /// These values were empirically tuned for 60 FPS gameplay with
-    /// typical keyboard/mouse input patterns.
+    /// Creates buffer with initial capacity (128 discrete, 1 continuous).
     pub(super) fn new() -> Self {
         Self {
             discrete: Vec::with_capacity(128),
@@ -113,80 +40,19 @@ impl InputBuffer {
         }
     }
 
-    //--- Insertion --------------------------------------------------------
-
-    /// Adds a continuous event, replacing any previous event of same type.
-    ///
-    /// Works via hash-by-discriminant: all `MouseMoved` events hash identically,
-    /// so `HashSet::replace()` keeps only the most recent coordinates.
-    ///
-    /// # Performance
-    ///
-    /// - Time: O(1) average case (hash table)
-    /// - Space: O(1) - set size never exceeds 1 for MouseMoved
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// buffer.push_continuous(MouseMoved{x: 10, y: 10});
-    /// buffer.push_continuous(MouseMoved{x: 20, y: 30});
-    /// // Buffer now contains only MouseMoved{x: 20, y: 30}
-    /// ```
+    /// Adds a continuous event (replaces previous via hash-by-discriminant).
     pub(super) fn push_continuous(&mut self, event: InputEvent) {
         self.continuous.replace(event);
     }
 
-    /// Adds a discrete event, ignoring consecutive duplicates.
-    ///
-    /// Only checks the **last** element for duplication (O(1) check).
-    /// Non-consecutive duplicates are allowed to preserve game semantics
-    /// (e.g., rapid key tapping).
-    ///
-    /// # Performance
-    ///
-    /// - Time: O(1) for duplicate check, O(1) amortized for push
-    /// - Space: O(1) per event
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// buffer.push_discrete(KeyDown{A});
-    /// buffer.push_discrete(KeyDown{A});  // Ignored
-    /// buffer.push_discrete(KeyDown{B});
-    /// buffer.push_discrete(KeyDown{A});  // Allowed
-    /// // Buffer: [KeyDown{A}, KeyDown{B}, KeyDown{A}]
-    /// ```
+    /// Adds a discrete event (ignores consecutive duplicates only).
     pub(super) fn push_discrete(&mut self, event: InputEvent) {
         if self.discrete.last() != Some(&event) {
             self.discrete.push(event);
         }
     }
 
-    //--- Draining ---------------------------------------------------------
-
-    /// Drains all events, returning `None` if buffer was empty.
-    ///
-    /// Returns two separate vectors:
-    /// 1. Discrete events (in insertion order)
-    /// 2. Continuous events (unordered - typically 0 or 1 element)
-    ///
-    /// # Capacity Preservation
-    ///
-    /// Both internal buffers retain their capacity after draining:
-    /// - `discrete`: Uses `mem::take` + manual realloc with same capacity
-    /// - `continuous`: Drains into vec, then recreates HashSet with same capacity
-    ///
-    /// This avoids reallocation on every frame (60+ times/second).
-    ///
-    /// # Performance
-    ///
-    /// - Time: O(n) where n = total events
-    /// - Space: O(n) for returned vectors, O(1) for internal buffers
-    ///
-    /// # Returns
-    ///
-    /// - `Some((discrete, continuous))` if any events were buffered
-    /// - `None` if both buffers were empty (optimization for caller to skip send)
+    /// Drains all events, preserving capacity. Returns None if empty.
     pub(super) fn drain(&mut self) -> Option<(Vec<InputEvent>, Vec<InputEvent>)> {
         if self.is_empty() {
             return None;
@@ -209,11 +75,7 @@ impl InputBuffer {
         Some((discrete, continuous))
     }
 
-    //--- Queries ----------------------------------------------------------
-
-    /// Returns `true` if both buffers are empty.
-    ///
-    /// Used by `drain()` to optimize out empty sends.
+    /// Returns true if both buffers are empty.
     pub(super) fn is_empty(&self) -> bool {
         self.discrete.is_empty() && self.continuous.is_empty()
     }

@@ -1,48 +1,20 @@
 //=========================================================================
-// Aetheric Engine — Library Root
+// Aetheric Engine
+//=========================================================================
 //
-// Defines the public API surface of the Aetheric Engine crate.
+// High-performance game engine with ECS and cross-platform support.
 //
-// Responsibilities:
-// - Expose the main Engine interface
-// - Keep platform and internal systems private
-// - Maintain clear separation between high-level façade
-//   and low-level subsystems (core logic, OS integration)
-//
-// Typical usage:
-// ```no_run
-// use aetheric::Engine;
-//
-// fn main() {
-//     Engine::new().run();
-// }
-// ```
+// Main entry: Engine::new() or EngineBuilder::new()
 //
 //=========================================================================
 
-//=== Public Modules ======================================================
-//
-// The `core` module hosts all fundamental engine systems (input,
-// ECS, etc.). It is public for advanced engine-level extensions,
-// but typical applications will interact primarily through `Engine`.
-//
+//=== Module Declarations =================================================
+
 pub mod core;
 
-//=== Internal Modules ====================================================
-//
-// - `platform`: OS integration layer (windowing, Winit, I/O)
-// - `engine`:   main entry point and initialization logic
-//
-// Both are internal and not exposed as part of the public API.
-//
 mod platform;
 mod engine;
 
-//=== Public Exports ======================================================
-//
-// Re-exports the `Engine` façade as the canonical entry point.
-// This allows application code to simply:
-//     use aetheric::Engine;
-// without referencing internal module paths.
-//
-pub use engine::Engine;
+//=== Public API ==========================================================
+
+pub use engine::{Engine, EngineBuilder, InputSystem};
