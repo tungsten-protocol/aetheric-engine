@@ -35,11 +35,6 @@ pub use event::{KeyCode, Modifiers, MouseButton};
 
 //=== Internal API ========================================================
 
-// InputEvent is crate-internal only (not exposed to game developers) because:
-// - Users interact via high-level InputSystem API (actions/raw state queries)
-// - Frame processing is handled automatically by the engine
-// - Platform bridge uses it internally for thread communication
-// - Exposing it would leak implementation details and complicate the API
 pub(crate) use event::InputEvent;
 
 //=== InputSystem =========================================================

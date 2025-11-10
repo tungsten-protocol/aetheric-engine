@@ -22,7 +22,7 @@ use log::{error, info};
 //=== Internal Dependencies ===============================================
 
 use crate::core::platform_bridge::PlatformEvent;
-use crate::core::{Action, CoreSystemsOrchestrator, GlobalResources, InputSystem};
+use crate::core::{Action, CoreSystemsOrchestrator, GlobalResources, InputSystem, SceneKey, SceneManager};
 use crate::platform::Platform;
 
 //=== EngineBuilder =======================================================
@@ -83,13 +83,13 @@ use crate::platform::Platform;
 ///     })
 ///     .run();
 /// ```
-pub struct EngineBuilder<A: Action> {
+pub struct EngineBuilder<S: SceneKey, A: Action> {
     tps: f64,
     channel_capacity: usize,
-    _phantom: std::marker::PhantomData<A>,
+    _phantom: std::marker::PhantomData<(S, A)>,
 }
 
-impl<A: Action> EngineBuilder<A> {
+impl<S: SceneKey, A: Action> EngineBuilder<S, A> {
     /// Creates a new builder with default settings.
     pub fn new() -> Self {
         Self {
@@ -139,7 +139,7 @@ impl<A: Action> EngineBuilder<A> {
     /// initialization or execution. Call [`Engine::init`] to initialize
     /// resources before running, or call [`Engine::run`] directly.
     /// An empty [`InputSystem`] is automatically created.
-    pub fn build(self) -> Engine<A> {
+    pub fn build(self) -> Engine<S, A> {
         let input_system = InputSystem::new();
 
         info!("Building engine (TPS: {}, channel: {})", self.tps, self.channel_capacity);
@@ -152,7 +152,7 @@ impl<A: Action> EngineBuilder<A> {
     }
 }
 
-impl<A: Action> Default for EngineBuilder<A> {
+impl<S: SceneKey, A: Action> Default for EngineBuilder<S, A> {
     fn default() -> Self {
         Self::new()
     }
@@ -205,13 +205,13 @@ impl<A: Action> Default for EngineBuilder<A> {
 ///     .build()
 ///     .run();
 /// ```
-pub struct Engine<A: Action> {
-    orchestrator: CoreSystemsOrchestrator<A>,
+pub struct Engine<S: SceneKey, A: Action> {
+    orchestrator: CoreSystemsOrchestrator<S, A>,
     tps: f64,
     channel_capacity: usize,
 }
 
-impl<A: Action> Engine<A> {
+impl<S: SceneKey, A: Action> Engine<S, A> {
     //--- Initialization ---------------------------------------------------
 
     /// Initializes engine resources before execution.
@@ -243,7 +243,7 @@ impl<A: Action> Engine<A> {
     /// ```
     pub fn init<F>(mut self, init_fn: F) -> Self
     where
-        F: FnOnce(&mut GlobalResources<A>),
+        F: FnOnce(&mut GlobalResources<S, A>),
     {
         info!("Initializing engine resources");
 
@@ -320,6 +320,13 @@ mod tests {
     use crate::core::input::KeyCode;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestScene {
+        Main,
+    }
+
+    impl SceneKey for TestScene {}
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     enum TestAction {
         Jump,
         Shoot,
@@ -333,54 +340,54 @@ mod tests {
 
     #[test]
     fn builder_can_be_created() {
-        let _builder = EngineBuilder::<TestAction>::new();
+        let _builder = EngineBuilder::<TestScene, TestAction>::new();
     }
 
     #[test]
     fn builder_defaults() {
-        let builder = EngineBuilder::<TestAction>::new();
+        let builder = EngineBuilder::<TestScene, TestAction>::new();
         assert_eq!(builder.tps, 60.0);
         assert_eq!(builder.channel_capacity, 128);
     }
 
     #[test]
     fn builder_with_tps() {
-        let builder = EngineBuilder::<TestAction>::new().with_tps(120.0);
+        let builder = EngineBuilder::<TestScene, TestAction>::new().with_tps(120.0);
         assert_eq!(builder.tps, 120.0);
     }
 
     #[test]
     #[should_panic(expected = "TPS must be positive")]
     fn builder_with_tps_panics_on_zero() {
-        EngineBuilder::<TestAction>::new().with_tps(0.0);
+        EngineBuilder::<TestScene, TestAction>::new().with_tps(0.0);
     }
 
     #[test]
     #[should_panic(expected = "TPS must be positive")]
     fn builder_with_tps_panics_on_negative() {
-        EngineBuilder::<TestAction>::new().with_tps(-60.0);
+        EngineBuilder::<TestScene, TestAction>::new().with_tps(-60.0);
     }
 
     #[test]
     fn builder_with_channel_capacity() {
-        let builder = EngineBuilder::<TestAction>::new().with_channel_capacity(256);
+        let builder = EngineBuilder::<TestScene, TestAction>::new().with_channel_capacity(256);
         assert_eq!(builder.channel_capacity, 256);
     }
 
     #[test]
     #[should_panic(expected = "Channel capacity must be positive")]
     fn builder_with_channel_capacity_panics_on_zero() {
-        EngineBuilder::<TestAction>::new().with_channel_capacity(0);
+        EngineBuilder::<TestScene, TestAction>::new().with_channel_capacity(0);
     }
 
     #[test]
     fn builder_build_creates_engine() {
-        let _engine = EngineBuilder::<TestAction>::new().build();
+        let _engine = EngineBuilder::<TestScene, TestAction>::new().build();
     }
 
     #[test]
     fn builder_fluent_api_chaining() {
-        let engine = EngineBuilder::<TestAction>::new()
+        let engine = EngineBuilder::<TestScene, TestAction>::new()
             .with_tps(120.0)
             .with_channel_capacity(256)
             .build();
