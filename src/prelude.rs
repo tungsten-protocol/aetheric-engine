@@ -18,7 +18,7 @@ pub use crate::engine::{Engine, EngineBuilder};
 pub use crate::core::globals::{GlobalContext, GlobalSystems};
 
 // Input system
-pub use crate::core::input::{Action, InputContext, KeyCode, Modifiers, MouseButton};
+pub use crate::core::input::{Action, InputContext, InputSystem, KeyCode, Modifiers, MouseButton};
 
 // Scene system
 pub use crate::core::scene::{Scene, SceneKey, SceneTransition};

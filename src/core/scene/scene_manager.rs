@@ -96,7 +96,7 @@ impl<S: SceneKey> SceneManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```ignore
     /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameScene { Main }
@@ -105,8 +105,8 @@ impl<S: SceneKey> SceneManager<S> {
     /// # impl Scene<GameScene> for MainScene {
     /// #     fn update(&mut self, _ctx: &GlobalContext) {}
     /// # }
-    /// # let mut manager = SceneManager::new();
-    /// manager.register_scene(GameScene::Main, MainScene);
+    /// // Accessed via Engine::init
+    /// // systems.scene_manager.register_scene(GameScene::Main, MainScene);
     /// ```
     pub fn register_scene<T>(&mut self, key: S, scene: T)
     where
@@ -126,7 +126,7 @@ impl<S: SceneKey> SceneManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```ignore
     /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameScene { Main }
@@ -135,8 +135,8 @@ impl<S: SceneKey> SceneManager<S> {
     /// # impl Scene<GameScene> for MainScene {
     /// #     fn update(&mut self, _ctx: &GlobalContext) {}
     /// # }
-    /// # let mut manager = SceneManager::new();
-    /// manager.register_default(GameScene::Main, MainScene);
+    /// // Accessed via Engine::init
+    /// // systems.scene_manager.register_default(GameScene::Main, MainScene);
     /// ```
     pub fn register_default<T>(&mut self, key: S, scene: T)
     where

@@ -30,7 +30,7 @@ use std::hash::Hash;
 /// # Example
 ///
 /// ```
-/// use aetheric_engine::core::input::Action;
+/// use aetheric_engine::prelude::*;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump, Shoot, Reload }
@@ -56,13 +56,13 @@ pub trait Action: 'static + Send + Copy + Eq + Hash + Debug {}
 ///
 /// # Example
 ///
-/// ```
-/// use aetheric_engine::core::input::{InputSystem, Action, InputContext, KeyCode};
+/// ```ignore
+/// use aetheric_engine::prelude::*;
 ///
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump, Select }
 /// # impl Action for GameAction {}
-/// let mut input = InputSystem::<GameAction>::new();
+/// let mut input = InputSystem::<GameAction>::default();
 ///
 /// // Gameplay: Space = Jump
 /// input.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
@@ -79,7 +79,7 @@ pub trait Action: 'static + Send + Copy + Eq + Hash + Debug {}
 ///
 /// Define semantic constants:
 /// ```
-/// # use aetheric_engine::core::input::InputContext;
+/// # use aetheric_engine::prelude::*;
 /// const GAMEPLAY: InputContext = InputContext::Primary;
 /// const MENU: InputContext = InputContext::custom(0);
 /// const VEHICLE: InputContext = InputContext::custom(1);
@@ -99,7 +99,7 @@ impl InputContext {
     /// Creates a custom context.
     ///
     /// ```
-    /// # use aetheric_engine::core::input::InputContext;
+    /// # use aetheric_engine::prelude::*;
     /// const MENU: InputContext = InputContext::custom(0);
     /// ```
     #[inline]

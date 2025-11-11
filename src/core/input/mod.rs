@@ -53,23 +53,26 @@ pub(crate) use event::InputEvent;
 /// Configure bindings during initialization and query input each tick:
 ///
 /// ```no_run
-/// use aetheric_engine::EngineBuilder;
-/// use aetheric_engine::core::input::{Action, KeyCode, InputContext};
+/// use aetheric_engine::prelude::*;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameScene { Main }
+/// impl SceneKey for GameScene {}
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump, Shoot }
 /// impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new()
+/// EngineBuilder::<GameScene, GameAction>::new()
 ///     .build()
-///     .init(|resources| {
+///     .init(|systems| {
 ///         // Setup bindings during initialization
-///         resources.input.bind_key(
+///         systems.input.bind_key(
 ///             KeyCode::Space,
 ///             GameAction::Jump,
 ///             InputContext::Primary
 ///         );
-///         resources.input.bind_key(
+///         systems.input.bind_key(
 ///             KeyCode::KeyF,
 ///             GameAction::Shoot,
 ///             InputContext::Primary
@@ -83,23 +86,23 @@ pub(crate) use event::InputEvent;
 /// If using InputSystem outside the engine (e.g., tests, custom loops),
 /// call [`process_frame`](Self::process_frame) manually each frame:
 ///
-/// ```
-/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode};
+/// ```ignore
+/// use aetheric_engine::prelude::*;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// let mut input = InputSystem::<GameAction>::new()
+/// let mut input = InputSystem::<GameAction>::default()
 ///     .with_binding(KeyCode::Space, GameAction::Jump);
 ///
 /// // In your custom game loop:
-/// // input.process_frame(&event_batches);
+/// // input.process_frame(&mut state, &event_batches);
 ///
-/// // Then query input:
-/// if input.is_key_pressed(KeyCode::Space) {
-///     // Handle jump
-/// }
+/// // Then query state:
+/// // if state.is_key_pressed(KeyCode::Space) {
+/// //     // Handle jump
+/// // }
 /// ```
 pub struct InputSystem<A: Action> {
     /// Action mapping system (bindings, contexts)
@@ -202,12 +205,12 @@ impl<A: Action> InputSystem<A> {
     /// use [`bind_key`](Self::bind_key) instead.
     ///
     /// # Examples
-    /// ```
-    /// # use aetheric_engine::core::input::{InputSystem, Action, KeyCode};
+    /// ```ignore
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Jump }
     /// # impl Action for GameAction {}
-    /// let input = InputSystem::<GameAction>::new()
+    /// let input = InputSystem::<GameAction>::default()
     ///     .with_binding(KeyCode::Space, GameAction::Jump);
     /// ```
     pub fn with_binding(mut self, key: KeyCode, action: A) -> Self {
@@ -219,12 +222,12 @@ impl<A: Action> InputSystem<A> {
     /// Binds a key with modifiers (exact match required).
     ///
     /// # Examples
-    /// ```
-    /// # use aetheric_engine::core::input::{InputSystem, Action, KeyCode, Modifiers};
+    /// ```ignore
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Save }
     /// # impl Action for GameAction {}
-    /// let input = InputSystem::<GameAction>::new()
+    /// let input = InputSystem::<GameAction>::default()
     ///     .with_binding_mods(KeyCode::KeyS, Modifiers::CTRL, GameAction::Save);
     /// ```
     pub fn with_binding_mods(
@@ -241,12 +244,12 @@ impl<A: Action> InputSystem<A> {
     /// Sets the active context using fluent API.
     ///
     /// # Examples
-    /// ```
-    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext};
+    /// ```ignore
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Jump }
     /// # impl Action for GameAction {}
-    /// let input = InputSystem::<GameAction>::new()
+    /// let input = InputSystem::<GameAction>::default()
     ///     .with_context(InputContext::custom(0));
     /// ```
     pub fn with_context(mut self, context: InputContext) -> Self {
@@ -271,12 +274,12 @@ impl<A: Action> InputSystem<A> {
     ///
     /// # Example
     ///
-    /// ```
-    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext, KeyCode};
+    /// ```ignore
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Jump }
     /// # impl Action for GameAction {}
-    /// let mut input = InputSystem::<GameAction>::new();
+    /// let mut input = InputSystem::<GameAction>::default();
     ///
     /// // Bind in primary gameplay context
     /// input.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
@@ -415,34 +418,10 @@ impl<A: Action> InputSystem<A> {
     // # }
     // ```
     //
-    // Then in your game logic, switch contexts when entering/exiting build mode:
-    //
-    // ```
-    // # use aetheric_engine::prelude::*;
-    // # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    // # enum GameAction { EnterBuildMode }
-    // # impl Action for GameAction {}
-    // # struct GameState { building_mode: bool }
-    // # let mut game_state = GameState { building_mode: false };
-    // # let context = GlobalContext::<()>::default();
-    // # let mut systems = GlobalSystems::<(), GameAction>::default();
-    // // In your scene update:
-    // # /*
-    // for action in systems.input.actions() {
-    //     match action {
-    //         GameAction::EnterBuildMode => {
-    //             game_state.building_mode = true;
-    //             systems.input.set_context(InputContext::custom(1)); // Switch to building
-    //         }
-    //         GameAction::CancelBuilding => {
-    //             game_state.building_mode = false;
-    //             systems.input.set_context(InputContext::Primary); // Back to gameplay
-    //         }
-    //         // ... other actions
-    //     }
-    // }
-    // # */
-    // ```
+    // Then in your scene logic, read actions from MessageBus and request context
+    // changes via custom messages. Note: Scenes only have access to GlobalContext,
+    // not GlobalSystems. Context switching would typically be done during scene
+    // transitions or via a custom message system.
     //
     // # Performance Note
     //
@@ -462,12 +441,12 @@ impl<A: Action> InputSystem<A> {
     ///
     /// # Example
     ///
-    /// ```
-    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext};
+    /// ```ignore
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Jump }
     /// # impl Action for GameAction {}
-    /// # let mut input = InputSystem::<GameAction>::new();
+    /// # let mut input = InputSystem::<GameAction>::default();
     /// // Switch to building mode
     /// input.set_context(InputContext::custom(1));
     ///

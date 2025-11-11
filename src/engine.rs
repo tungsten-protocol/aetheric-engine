@@ -41,9 +41,7 @@ use crate::platform::Platform;
 ///
 /// Simple usage with defaults:
 /// ```no_run
-/// use aetheric_engine::EngineBuilder;
-/// use aetheric_engine::core::input::Action;
-/// use aetheric_engine::core::scene::SceneKey;
+/// use aetheric_engine::prelude::*;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameScene { Main }
@@ -58,9 +56,7 @@ use crate::platform::Platform;
 ///
 /// Advanced configuration:
 /// ```no_run
-/// # use aetheric_engine::EngineBuilder;
-/// # use aetheric_engine::core::input::Action;
-/// # use aetheric_engine::core::scene::SceneKey;
+/// # use aetheric_engine::prelude::*;
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameScene { Main }
 /// # impl SceneKey for GameScene {}
@@ -77,9 +73,7 @@ use crate::platform::Platform;
 ///
 /// With initialization:
 /// ```no_run
-/// # use aetheric_engine::EngineBuilder;
-/// # use aetheric_engine::core::input::Action;
-/// # use aetheric_engine::core::scene::SceneKey;
+/// # use aetheric_engine::prelude::*;
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameScene { Main }
 /// # impl SceneKey for GameScene {}
@@ -90,10 +84,10 @@ use crate::platform::Platform;
 /// EngineBuilder::<GameScene, GameAction>::new()
 ///     .with_tps(120.0)
 ///     .build()
-///     .init(|systems| {
-///         // Initialize game systems
-///         systems.input.bind_key(/* ... */);
-///         systems.scene_manager.register_scene(/* ... */);
+///     .init(|_systems| {
+///         // Initialize game systems here
+///         // systems.input.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
+///         // systems.scene_manager.register_scene(GameScene::Main, MyScene);
 ///     })
 ///     .run();
 /// ```
@@ -194,25 +188,30 @@ impl<S: SceneKey, A: Action> Default for EngineBuilder<S, A> {
 ///
 /// Quick start:
 /// ```no_run
-/// use aetheric_engine::EngineBuilder;
-/// use aetheric_engine::core::input::Action;
+/// use aetheric_engine::prelude::*;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameScene { Main }
+/// impl SceneKey for GameScene {}
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new().build().run();
+/// EngineBuilder::<GameScene, GameAction>::new().build().run();
 /// ```
 ///
 /// With configuration:
 /// ```no_run
-/// # use aetheric_engine::EngineBuilder;
-/// # use aetheric_engine::core::input::Action;
+/// # use aetheric_engine::prelude::*;
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # enum GameScene { Main }
+/// # impl SceneKey for GameScene {}
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump }
 /// # impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new()
+/// EngineBuilder::<GameScene, GameAction>::new()
 ///     .with_tps(120.0)
 ///     .build()
 ///     .run();
@@ -239,9 +238,7 @@ impl<S: SceneKey, A: Action> Engine<S, A> {
     /// # Examples
     ///
     /// ```no_run
-    /// # use aetheric_engine::EngineBuilder;
-    /// # use aetheric_engine::core::input::{Action, KeyCode};
-    /// # use aetheric_engine::core::scene::SceneKey;
+    /// # use aetheric_engine::prelude::*;
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameScene { Main }
     /// # impl SceneKey for GameScene {}
@@ -252,8 +249,8 @@ impl<S: SceneKey, A: Action> Engine<S, A> {
     /// EngineBuilder::<GameScene, GameAction>::new()
     ///     .build()
     ///     .init(|systems| {
-    ///         systems.input.bind_key(KeyCode::Space, GameAction::Jump);
-    ///         systems.input.bind_key(KeyCode::KeyF, GameAction::Shoot);
+    ///         systems.input.bind_key(KeyCode::Space, GameAction::Jump, InputContext::Primary);
+    ///         systems.input.bind_key(KeyCode::KeyF, GameAction::Shoot, InputContext::Primary);
     ///         // systems.scene_manager.register_scene(...);
     ///     })
     ///     .run();

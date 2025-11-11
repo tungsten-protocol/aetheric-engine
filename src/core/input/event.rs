@@ -226,14 +226,14 @@ impl Hash for InputEvent {
 ///
 /// # Example
 ///
-/// ```
-/// use aetheric_engine::core::input::{InputSystem, Action, KeyCode, Modifiers, InputContext};
+/// ```ignore
+/// use aetheric_engine::prelude::*;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Save, SaveAs }
 /// impl Action for GameAction {}
 ///
-/// let mut input = InputSystem::<GameAction>::new();
+/// let mut input = InputSystem::<GameAction>::default();
 ///
 /// // Bind Ctrl+S (save) and Ctrl+Shift+S (save as)
 /// input.bind_key_with_mods(

@@ -2,12 +2,12 @@
 name = "aetheric_engine"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A multithreaded game engine with deterministic simulation and clean platform abstraction"
+repository = "https://github.com/tungsten-protocol/aetheric-engine"
+authors = ["Hari Seldon <tungsten.protocol@gmail.com>"]
 
 [dependencies]
 winit = "0.30"
-wgpu = "0.20"
 log = "0.4.28"
-env_logger = "0.10"
-pollster = "0.3"
-array = "0.0.1"  # per bloccare async setup GPU
 crossbeam-channel = "0.5"
