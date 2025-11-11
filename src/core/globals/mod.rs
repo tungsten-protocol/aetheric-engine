@@ -6,7 +6,7 @@
 //
 // Architecture:
 //   GlobalSystems: InputSystem + SceneManager (owned by orchestrator)
-//   GlobalContext: StateTracker + TransitionQueue (passed to scenes)
+//   GlobalContext: StateTracker + MessageBus (passed to scenes)
 //
 //=========================================================================
 

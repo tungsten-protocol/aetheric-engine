@@ -22,8 +22,9 @@ use log::{info, warn};
 
 //=== Module Declarations =================================================
 
-pub mod input;
 pub mod globals;
+pub mod input;
+pub mod message_bus;
 pub mod scene;
 
 pub(crate) mod platform_bridge;
@@ -45,7 +46,7 @@ use platform_bridge::{EventCollector, PlatformEvent, TickControl};
 /// Runs at fixed timestep for deterministic simulation, independent of
 /// platform frame rate. Communicates via message passing only.
 pub(crate) struct CoreSystemsOrchestrator<S: SceneKey, A: Action> {
-    context: GlobalContext<S>,
+    context: GlobalContext,
     systems: GlobalSystems<S, A>,
 }
 
@@ -97,6 +98,9 @@ impl<S: SceneKey, A: Action> CoreSystemsOrchestrator<S, A> {
     fn run_loop(&mut self, receiver: Receiver<PlatformEvent>, frame_duration: Duration) {
         let mut event_collector = EventCollector::new(receiver);
 
+        // Initialize scene manager by calling on_enter for initial scenes
+        self.systems.scene_manager.start(&self.context);
+
         loop {
             let frame_start = Instant::now();
 
@@ -107,7 +111,7 @@ impl<S: SceneKey, A: Action> CoreSystemsOrchestrator<S, A> {
             }
 
             // Transfer events to context
-            self.context.frame_events = event_collector.take_batches();
+            self.context.frame_input_events = event_collector.take_batches();
 
             // Update all systems (input, scenes, transitions)
             self.systems.update(&mut self.context);

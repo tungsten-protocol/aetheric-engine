@@ -11,6 +11,7 @@
 //=== Module Declarations =================================================
 
 pub mod core;
+pub mod prelude;
 
 mod platform;
 mod engine;

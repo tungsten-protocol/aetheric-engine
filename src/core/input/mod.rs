@@ -336,13 +336,151 @@ impl<A: Action> InputSystem<A> {
     //=====================================================================
     // Context Management
     //=====================================================================
+    //
+    // Input contexts enable different key bindings for different game states.
+    // Only the ACTIVE context's bindings generate actions each frame.
+    //
+    // # Why Use Contexts?
+    //
+    // Without contexts, you'd need to manually rebind keys every time the
+    // game state changes (entering menus, building mode, vehicles, etc.).
+    // With contexts, you set up all bindings once during initialization,
+    // then switch contexts at runtime with a single function call.
+    //
+    // # Common Use Cases
+    //
+    // 1. **Gameplay vs Menu Navigation**
+    //    - Gameplay: Space = Jump, E = Interact
+    //    - Menu: Space = Select, E = Exit menu
+    //
+    // 2. **Building Mode vs Normal Mode** (factory builders, city sims)
+    //    - Building: LMB = Place structure, R = Rotate
+    //    - Normal: LMB = Use tool, R = Open recipe book
+    //
+    // 3. **Dialogue System**
+    //    - Dialogue: Space = Advance text, Arrows = Select response
+    //    - World: Space = Jump, Arrows = Move camera
+    //
+    // 4. **Vehicle Controls**
+    //    - On foot: WASD = Walk, Space = Jump
+    //    - In vehicle: WASD = Drive, Space = Handbrake
+    //
+    // 5. **Overlay Screens** (tech trees, maps, inventory)
+    //    - Overlay: Arrows = Navigate UI, Enter = Confirm
+    //    - Gameplay: Arrows = Strafe, Enter = Use item
+    //
+    // # Example: Building Mode
+    //
+    // ```no_run
+    // use aetheric_engine::prelude::*;
+    //
+    // #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    // enum GameAction {
+    //     // Shared actions
+    //     OpenMenu,
+    //
+    //     // Gameplay actions
+    //     Walk, UseTool,
+    //
+    //     // Building mode actions
+    //     PlaceStructure, RotateStructure, CancelBuilding,
+    // }
+    // impl Action for GameAction {}
+    //
+    // # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    // # enum GameScene { Main }
+    // # impl SceneKey for GameScene {}
+    // # fn main() {
+    // EngineBuilder::<GameScene, GameAction>::new()
+    //     .build()
+    //     .init(|systems| {
+    //         // Define custom contexts
+    //         let gameplay = InputContext::Primary;
+    //         let building = InputContext::custom(1);
+    //
+    //         // Gameplay context bindings
+    //         systems.input.bind_key(KeyCode::KeyW, GameAction::Walk, gameplay);
+    //         systems.input.bind_mouse(MouseButton::Left, GameAction::UseTool, gameplay);
+    //         systems.input.bind_key(KeyCode::Escape, GameAction::OpenMenu, gameplay);
+    //
+    //         // Building mode bindings (same keys, different actions!)
+    //         systems.input.bind_mouse(MouseButton::Left, GameAction::PlaceStructure, building);
+    //         systems.input.bind_key(KeyCode::KeyR, GameAction::RotateStructure, building);
+    //         systems.input.bind_key(KeyCode::Escape, GameAction::CancelBuilding, building);
+    //
+    //         // Start in gameplay mode
+    //         systems.input.set_context(gameplay);
+    //     })
+    //     .run();
+    // # }
+    // ```
+    //
+    // Then in your game logic, switch contexts when entering/exiting build mode:
+    //
+    // ```
+    // # use aetheric_engine::prelude::*;
+    // # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    // # enum GameAction { EnterBuildMode }
+    // # impl Action for GameAction {}
+    // # struct GameState { building_mode: bool }
+    // # let mut game_state = GameState { building_mode: false };
+    // # let context = GlobalContext::<()>::default();
+    // # let mut systems = GlobalSystems::<(), GameAction>::default();
+    // // In your scene update:
+    // # /*
+    // for action in systems.input.actions() {
+    //     match action {
+    //         GameAction::EnterBuildMode => {
+    //             game_state.building_mode = true;
+    //             systems.input.set_context(InputContext::custom(1)); // Switch to building
+    //         }
+    //         GameAction::CancelBuilding => {
+    //             game_state.building_mode = false;
+    //             systems.input.set_context(InputContext::Primary); // Back to gameplay
+    //         }
+    //         // ... other actions
+    //     }
+    // }
+    // # */
+    // ```
+    //
+    // # Performance Note
+    //
+    // Context switching is O(1) - it just changes which binding table is queried.
+    // There's no rebinding overhead, making it suitable for per-frame changes
+    // (e.g., switching when opening inventory).
+    //
+    //=====================================================================
 
     /// Sets the active input context (only active bindings generate actions).
+    ///
+    /// Bindings in other contexts remain configured but will not trigger actions
+    /// until that context is activated. Switching contexts is instant (O(1)).
+    ///
+    /// See the [Context Management](Self#context-management) section for
+    /// detailed examples and common use cases.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use aetheric_engine::core::input::{InputSystem, Action, InputContext};
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameAction { Jump }
+    /// # impl Action for GameAction {}
+    /// # let mut input = InputSystem::<GameAction>::new();
+    /// // Switch to building mode
+    /// input.set_context(InputContext::custom(1));
+    ///
+    /// // Switch back to gameplay
+    /// input.set_context(InputContext::Primary);
+    /// ```
     pub fn set_context(&mut self, context: InputContext) {
         self.mapper.set_context(context);
     }
 
     /// Returns the currently active context.
+    ///
+    /// Useful for debugging or UI displays showing current control scheme.
     #[must_use]
     pub fn current_context(&self) -> InputContext {
         self.mapper.current_context()
