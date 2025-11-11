@@ -23,7 +23,7 @@ use super::event::{Modifiers, InputEvent, KeyCode, MouseButton};
 
 /// Tracks persistent state (keys held) and per-frame deltas (keys pressed/released).
 /// Frame lifecycle: clear() → process_events() → finalize_frame() → query.
-pub(super) struct StateTracker {
+pub struct StateTracker {
     //--- Persistent State (survives frame boundary) ----------------------
     keys_down: HashSet<KeyCode>,
     mouse_buttons_down: HashSet<MouseButton>,
@@ -43,7 +43,7 @@ pub(super) struct StateTracker {
 
 impl StateTracker {
     /// Creates a new state tracker with empty state.
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             keys_down: HashSet::new(),
             mouse_buttons_down: HashSet::new(),
@@ -59,7 +59,8 @@ impl StateTracker {
     }
 
     //--- Frame Processing -------------------------------------------------
-    /// Clears frame-specific deltas.
+
+    /// Clears frame-specific deltas (pressed/released flags).
     pub(super) fn clear(&mut self) {
         self.keys_pressed_this_frame.clear();
         self.keys_released_this_frame.clear();
@@ -68,7 +69,7 @@ impl StateTracker {
         self.last_mouse_position = self.mouse_position;
     }
 
-    /// Processes input events.
+    /// Processes input events, updating internal state.
     pub(super) fn process_events(&mut self, events: &[InputEvent]) {
         for event in events {
             self.process_event(event);
@@ -129,17 +130,24 @@ impl StateTracker {
     //=====================================================================
     // Query API - Keyboard
     //=====================================================================
-    /// Returns true if the key transitioned from UP to DOWN this frame.
+
+    /// Returns `true` if key transitioned UP → DOWN (one frame only).
+    ///
+    /// Use for discrete actions like jumping or toggling menus.
     pub fn is_key_pressed(&self, key: KeyCode) -> bool {
         self.keys_pressed_this_frame.contains(&key)
     }
 
-    /// Returns true while the key is held down.
+    /// Returns `true` while key is held.
+    ///
+    /// Use for continuous actions like movement or charging.
     pub fn is_key_down(&self, key: KeyCode) -> bool {
         self.keys_down.contains(&key)
     }
 
-    /// Returns true if the key transitioned from DOWN to UP this frame.
+    /// Returns `true` if key transitioned DOWN → UP.
+    ///
+    /// Use for release-dependent actions like ending a charge attack.
     pub fn is_key_released(&self, key: KeyCode) -> bool {
         self.keys_released_this_frame.contains(&key)
     }
@@ -147,17 +155,18 @@ impl StateTracker {
     //=====================================================================
     // Query API - Mouse Buttons
     //=====================================================================
-    /// Returns true if the button transitioned from UP to DOWN this frame.
+
+    /// Like [`is_key_pressed`](Self::is_key_pressed) but for mouse buttons.
     pub fn is_button_pressed(&self, button: MouseButton) -> bool {
         self.mouse_buttons_pressed_this_frame.contains(&button)
     }
 
-    /// Returns true while the button is held down.
+    /// Like [`is_key_down`](Self::is_key_down) but for mouse buttons.
     pub fn is_button_down(&self, button: MouseButton) -> bool {
         self.mouse_buttons_down.contains(&button)
     }
 
-    /// Returns true if the button transitioned from DOWN to UP this frame.
+    /// Like [`is_key_released`](Self::is_key_released) but for mouse buttons.
     pub fn is_button_released(&self, button: MouseButton) -> bool {
         self.mouse_buttons_released_this_frame.contains(&button)
     }
@@ -165,12 +174,15 @@ impl StateTracker {
     //=====================================================================
     // Query API - Mouse Position & Movement
     //=====================================================================
-    /// Returns the current mouse position (pixels, top-left origin).
+
+    /// Returns mouse position in screen coordinates (pixels, top-left origin).
     pub fn mouse_position(&self) -> (f32, f32) {
         self.mouse_position
     }
 
-    /// Returns the mouse movement delta for this frame.
+    /// Returns mouse movement delta (0,0 if no movement).
+    ///
+    /// Useful for camera control, drag operations, etc.
     pub fn mouse_delta(&self) -> (f32, f32) {
         self.mouse_delta
     }
@@ -179,22 +191,23 @@ impl StateTracker {
     //=====================================================================
     // Query API - Modifiers
     //=====================================================================
+
     /// Returns the current modifier key state.
     pub fn modifiers(&self) -> Modifiers {
         self.modifiers
     }
 
-    /// Returns true if Shift is held.
+    /// Returns `true` if Shift is currently held.
     pub fn shift_held(&self) -> bool {
         self.modifiers.shift
     }
 
-    /// Returns true if Ctrl is held.
+    /// Returns `true` if Ctrl is currently held.
     pub fn ctrl_held(&self) -> bool {
         self.modifiers.ctrl
     }
 
-    /// Returns true if Alt is held.
+    /// Returns `true` if Alt is currently held.
     pub fn alt_held(&self) -> bool {
         self.modifiers.alt
     }
@@ -202,32 +215,33 @@ impl StateTracker {
     //=====================================================================
     // Query API - Iteration
     //=====================================================================
+
     /// Returns an iterator over all keys currently held.
     pub fn keys_down(&self) -> impl Iterator<Item = &KeyCode> {
         self.keys_down.iter()
     }
     
-    /// Returns an iterator over all keys pressed this frame.
+    /// Returns an iterator over all keys pressed.
     pub fn keys_pressed(&self) -> impl Iterator<Item = &KeyCode> {
         self.keys_pressed_this_frame.iter()
     }
 
-    /// Returns an iterator over all keys released this frame.
+    /// Returns an iterator over all keys released.
     pub fn keys_released(&self) -> impl Iterator<Item = &KeyCode> {
         self.keys_released_this_frame.iter()
     }
 
-    /// Returns an iterator over all mouse buttons currently pressed.
+    /// Returns an iterator over all mouse buttons currently held.
     pub fn buttons_down(&self) -> impl Iterator<Item = &MouseButton> {
         self.mouse_buttons_down.iter()
     }
 
-    /// Returns an iterator over all mouse buttons pressed this frame.
+    /// Returns an iterator over all mouse buttons pressed.
     pub fn buttons_pressed(&self) -> impl Iterator<Item = &MouseButton> {
         self.mouse_buttons_pressed_this_frame.iter()
     }
 
-    /// Returns an iterator over all mouse buttons released this frame.
+    /// Returns an iterator over all mouse buttons released.
     pub fn buttons_released(&self) -> impl Iterator<Item = &MouseButton> {
         self.mouse_buttons_released_this_frame.iter()
     }

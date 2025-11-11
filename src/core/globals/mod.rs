@@ -1,21 +1,21 @@
 //=========================================================================
-// Aetheric Engine
+// Global Engine State
 //=========================================================================
 //
-// High-performance game engine with ECS and cross-platform support.
+// Separates systems (logic components) from context (shared data).
 //
-// Main entry: Engine::new() or EngineBuilder::new()
+// Architecture:
+//   GlobalSystems: InputSystem + SceneManager (owned by orchestrator)
+//   GlobalContext: StateTracker + TransitionQueue (passed to scenes)
 //
 //=========================================================================
 
 //=== Module Declarations =================================================
 
-pub mod core;
-
-mod platform;
-mod engine;
+mod global_context;
+mod global_systems;
 
 //=== Public API ==========================================================
 
-pub use core::{GlobalContext, GlobalSystems, InputSystem};
-pub use engine::{Engine, EngineBuilder};
+pub use global_context::GlobalContext;
+pub use global_systems::GlobalSystems;

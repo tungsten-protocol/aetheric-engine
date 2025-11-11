@@ -88,6 +88,14 @@ impl EventCollector {
         &self.input_batches
     }
 
+    /// Takes ownership of collected input batches, leaving empty vec.
+    ///
+    /// Efficient transfer without allocation. The internal buffer is
+    /// replaced with an empty Vec (will be cleared next frame anyway).
+    pub(crate) fn take_batches(&mut self) -> Vec<Vec<InputEvent>> {
+        std::mem::take(&mut self.input_batches)
+    }
+
     fn handle_event(&mut self, event: PlatformEvent) -> TickControl {
         match event {
             PlatformEvent::Inputs { discrete, continuous } => {

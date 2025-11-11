@@ -16,8 +16,7 @@
 
 //=== Internal Dependencies ===============================================
 
-use crate::core::input::Action;
-use crate::core::global_resources::GlobalResources;
+use crate::core::globals::GlobalContext;
 
 //=== Module Declarations =================================================
 
@@ -35,15 +34,15 @@ pub use transition_queue::TransitionQueue;
 ///
 /// Scenes are registered in SceneManager and activated via scene stack.
 /// Each scene maintains its own state between activations.
-pub trait Scene<S: SceneKey, A: Action>: Send {
+pub trait Scene<S: SceneKey>: Send {
     /// Called when scene enters the active stack.
-    fn on_enter(&mut self, globals: &GlobalResources<S, A>);
+    fn on_enter(&mut self, context: &GlobalContext<S>);
 
     /// Called when scene exits the active stack.
-    fn on_exit(&mut self, globals: &GlobalResources<S, A>);
+    fn on_exit(&mut self, context: &GlobalContext<S>);
 
     /// Called every tick while scene is active on stack.
-    fn update(&mut self, globals: &GlobalResources<S, A>);
+    fn update(&mut self, context: &GlobalContext<S>);
 
     /// Whether scenes below this one should receive updates.
     ///

@@ -22,7 +22,7 @@ use log::{error, info};
 //=== Internal Dependencies ===============================================
 
 use crate::core::platform_bridge::PlatformEvent;
-use crate::core::{Action, CoreSystemsOrchestrator, GlobalResources, InputSystem, SceneKey, SceneManager};
+use crate::core::{Action, CoreSystemsOrchestrator, GlobalSystems, SceneKey};
 use crate::platform::Platform;
 
 //=== EngineBuilder =======================================================
@@ -30,7 +30,7 @@ use crate::platform::Platform;
 /// Builder for configuring and constructing an [`Engine`].
 ///
 /// Provides a fluent API for setting engine parameters before construction.
-/// An empty [`InputSystem`] is automatically created.
+/// Engine systems are automatically initialized.
 ///
 /// # Default Values
 ///
@@ -43,23 +43,32 @@ use crate::platform::Platform;
 /// ```no_run
 /// use aetheric_engine::EngineBuilder;
 /// use aetheric_engine::core::input::Action;
+/// use aetheric_engine::core::scene::SceneKey;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum GameScene { Main }
+/// impl SceneKey for GameScene {}
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// enum GameAction { Jump }
 /// impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new().build().run();
+/// EngineBuilder::<GameScene, GameAction>::new().build().run();
 /// ```
 ///
 /// Advanced configuration:
 /// ```no_run
 /// # use aetheric_engine::EngineBuilder;
 /// # use aetheric_engine::core::input::Action;
+/// # use aetheric_engine::core::scene::SceneKey;
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # enum GameScene { Main }
+/// # impl SceneKey for GameScene {}
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump }
 /// # impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new()
+/// EngineBuilder::<GameScene, GameAction>::new()
 ///     .with_tps(120.0)              // High refresh rate
 ///     .with_channel_capacity(256)   // Extra buffering
 ///     .build()
@@ -70,16 +79,21 @@ use crate::platform::Platform;
 /// ```no_run
 /// # use aetheric_engine::EngineBuilder;
 /// # use aetheric_engine::core::input::Action;
+/// # use aetheric_engine::core::scene::SceneKey;
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # enum GameScene { Main }
+/// # impl SceneKey for GameScene {}
 /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// # enum GameAction { Jump }
 /// # impl Action for GameAction {}
 ///
-/// EngineBuilder::<GameAction>::new()
+/// EngineBuilder::<GameScene, GameAction>::new()
 ///     .with_tps(120.0)
 ///     .build()
-///     .init(|ctx| {
-///         // Initialize game systems using resources
-///         ctx.input.bind_key(/* ... */);
+///     .init(|systems| {
+///         // Initialize game systems
+///         systems.input.bind_key(/* ... */);
+///         systems.scene_manager.register_scene(/* ... */);
 ///     })
 ///     .run();
 /// ```
@@ -137,15 +151,13 @@ impl<S: SceneKey, A: Action> EngineBuilder<S, A> {
     ///
     /// Consumes the builder and produces a configured [`Engine`] ready for
     /// initialization or execution. Call [`Engine::init`] to initialize
-    /// resources before running, or call [`Engine::run`] directly.
-    /// An empty [`InputSystem`] is automatically created.
+    /// systems before running, or call [`Engine::run`] directly.
+    /// All engine systems are automatically created.
     pub fn build(self) -> Engine<S, A> {
-        let input_system = InputSystem::new();
-
         info!("Building engine (TPS: {}, channel: {})", self.tps, self.channel_capacity);
 
         Engine {
-            orchestrator: CoreSystemsOrchestrator::new(input_system),
+            orchestrator: CoreSystemsOrchestrator::new(),
             tps: self.tps,
             channel_capacity: self.channel_capacity,
         }
@@ -214,11 +226,11 @@ pub struct Engine<S: SceneKey, A: Action> {
 impl<S: SceneKey, A: Action> Engine<S, A> {
     //--- Initialization ---------------------------------------------------
 
-    /// Initializes engine resources before execution.
+    /// Initializes engine systems before execution.
     ///
-    /// Provides mutable access to [`GlobalResources`] for configuring
-    /// game systems (input bindings, ECS setup, etc.) before the engine
-    /// starts running.
+    /// Provides mutable access to [`GlobalSystems`] for configuring
+    /// game systems (input bindings, scene registration, etc.) before
+    /// the engine starts running.
     ///
     /// This method can only be called once before [`Engine::run`].
     /// After calling `run`, the engine consumes itself and cannot be
@@ -229,25 +241,30 @@ impl<S: SceneKey, A: Action> Engine<S, A> {
     /// ```no_run
     /// # use aetheric_engine::EngineBuilder;
     /// # use aetheric_engine::core::input::{Action, KeyCode};
+    /// # use aetheric_engine::core::scene::SceneKey;
+    /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// # enum GameScene { Main }
+    /// # impl SceneKey for GameScene {}
     /// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     /// # enum GameAction { Jump, Shoot }
     /// # impl Action for GameAction {}
     ///
-    /// EngineBuilder::<GameAction>::new()
+    /// EngineBuilder::<GameScene, GameAction>::new()
     ///     .build()
-    ///     .init(|resources| {
-    ///         resources.input.bind_key(KeyCode::Space, GameAction::Jump);
-    ///         resources.input.bind_key(KeyCode::KeyF, GameAction::Shoot);
+    ///     .init(|systems| {
+    ///         systems.input.bind_key(KeyCode::Space, GameAction::Jump);
+    ///         systems.input.bind_key(KeyCode::KeyF, GameAction::Shoot);
+    ///         // systems.scene_manager.register_scene(...);
     ///     })
     ///     .run();
     /// ```
     pub fn init<F>(mut self, init_fn: F) -> Self
     where
-        F: FnOnce(&mut GlobalResources<S, A>),
+        F: FnOnce(&mut GlobalSystems<S, A>),
     {
-        info!("Initializing engine resources");
+        info!("Initializing engine systems");
 
-        self.orchestrator.init_resources(init_fn);
+        self.orchestrator.init_systems(init_fn);
 
         info!("Engine initialization complete");
         self

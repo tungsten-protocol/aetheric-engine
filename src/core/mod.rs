@@ -23,7 +23,7 @@ use log::{info, warn};
 //=== Module Declarations =================================================
 
 pub mod input;
-pub mod global_resources;
+pub mod globals;
 pub mod scene;
 
 pub(crate) mod platform_bridge;
@@ -31,7 +31,7 @@ pub(crate) mod platform_bridge;
 //=== Public API ==========================================================
 
 pub use input::{Action, InputSystem};
-pub use global_resources::GlobalResources;
+pub use globals::{GlobalContext, GlobalSystems};
 pub use scene::{SceneKey, SceneManager};
 
 //=== Internal Dependencies ===============================================
@@ -45,31 +45,31 @@ use platform_bridge::{EventCollector, PlatformEvent, TickControl};
 /// Runs at fixed timestep for deterministic simulation, independent of
 /// platform frame rate. Communicates via message passing only.
 pub(crate) struct CoreSystemsOrchestrator<S: SceneKey, A: Action> {
-    resources: GlobalResources<S, A>,
-    scene_manager: SceneManager<S, A>,
+    context: GlobalContext<S>,
+    systems: GlobalSystems<S, A>,
 }
 
 impl<S: SceneKey, A: Action> CoreSystemsOrchestrator<S, A> {
     //--- Construction -----------------------------------------------------
 
-    pub(crate) fn new(input_system: InputSystem<A>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            resources: GlobalResources::new(input_system),
-            scene_manager: SceneManager::new(),
+            context: GlobalContext::new(),
+            systems: GlobalSystems::new(),
         }
     }
 
     //--- Resource Initialization ------------------------------------------
 
-    /// Allows external initialization of resources before spawning core thread.
+    /// Allows external initialization of systems before spawning core thread.
     ///
-    /// Provides mutable access to `GlobalResources` and `SceneManager` for
-    /// configuration (input bindings, scene registration, etc.) via a closure.
-    pub(crate) fn init_resources<F>(&mut self, init_fn: F)
+    /// Provides mutable access to `GlobalSystems` for configuration
+    /// (input bindings, scene registration, etc.) via a closure.
+    pub(crate) fn init_systems<F>(&mut self, init_fn: F)
     where
-        F: FnOnce(&mut GlobalResources<S, A>),
+        F: FnOnce(&mut GlobalSystems<S, A>),
     {
-        init_fn(&mut self.resources);
+        init_fn(&mut self.systems);
     }
 
     //--- Thread Lifecycle -------------------------------------------------
@@ -100,37 +100,21 @@ impl<S: SceneKey, A: Action> CoreSystemsOrchestrator<S, A> {
         loop {
             let frame_start = Instant::now();
 
-            // --- input collection phase ---
+            // Collect events from platform thread
             if event_collector.collect_frame() == TickControl::Exit {
                 info!("Core thread exiting cleanly.");
                 break;
             }
 
-            // --- input update phase ---
-            self.resources.input.process_frame(event_collector.batches());
+            // Transfer events to context
+            self.context.frame_events = event_collector.take_batches();
 
-            // --- scene update phase ---
-            self.scene_manager.update(&self.resources);
+            // Update all systems (input, scenes, transitions)
+            self.systems.update(&mut self.context);
 
-            // --- scene transition processing ---
-            self.scene_manager.process_transitions(&mut self.resources);
-
-            // --- systems update phase ---
-            self.update_systems();
-
-            // --- frame pacing ---
+            // Frame pacing
             Self::maintain_frame_rate(frame_start, frame_duration);
         }
-    }
-
-    //--- System Updates ---------------------------------------------------
-
-    fn update_systems(&mut self) {
-        // Future system integration points:
-        // - self.scene_manager.update(&mut self.ctx);
-        // - self.physics_system.update(&mut self.ctx);
-        // - self.ai_system.update(&mut self.ctx);
-        // - self.audio_system.update(&mut self.ctx);
     }
 
     //--- Frame Pacing -----------------------------------------------------
@@ -179,7 +163,7 @@ mod tests {
     #[test]
     fn spawn_core_thread_exits_on_window_closed() {
         let (tx, rx) = unbounded();
-        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new(InputSystem::new());
+        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new();
         let handle = orchestrator.spawn_core_thread(rx, 60.0);
 
         tx.send(PlatformEvent::WindowClosed).unwrap();
@@ -190,7 +174,7 @@ mod tests {
     #[test]
     fn spawn_core_thread_exits_on_channel_disconnect() {
         let (tx, rx) = unbounded();
-        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new(InputSystem::new());
+        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new();
         let handle = orchestrator.spawn_core_thread(rx, 60.0);
 
         drop(tx);
@@ -204,7 +188,7 @@ mod tests {
     #[should_panic(expected = "TPS must be positive, got 0")]
     fn spawn_panics_on_zero_tps() {
         let (_, rx) = unbounded();
-        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new(InputSystem::new());
+        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new();
         orchestrator.spawn_core_thread(rx, 0.0);
     }
 
@@ -212,7 +196,7 @@ mod tests {
     #[should_panic(expected = "TPS must be positive, got -10")]
     fn spawn_panics_on_negative_tps() {
         let (_, rx) = unbounded();
-        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new(InputSystem::new());
+        let orchestrator = CoreSystemsOrchestrator::<TestScene, TestAction>::new();
         orchestrator.spawn_core_thread(rx, -10.0);
     }
 }

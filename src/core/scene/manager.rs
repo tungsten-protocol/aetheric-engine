@@ -14,14 +14,12 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 
 use log::{debug, warn};
 
 //=== Internal Dependencies ===============================================
 
-use crate::core::Action;
-use crate::core::GlobalResources;
+use crate::core::globals::GlobalContext;
 use super::Scene;
 
 //=== Scene Transition ====================================================
@@ -70,13 +68,12 @@ pub trait SceneKey: Clone + Copy + Eq + Hash + Debug + Send + 'static {}
 /// determines which scenes are active, with the topmost scene receiving
 /// input and rendering priority.
 ///
-pub struct SceneManager<S: SceneKey, A: Action> {
-    scenes: HashMap<S, Box<dyn Scene<S, A>>>,
+pub struct SceneManager<S: SceneKey> {
+    scenes: HashMap<S, Box<dyn Scene<S>>>,
     stack: Vec<S>,
-    _phantom: PhantomData<A>,
 }
 
-impl<S: SceneKey, A: Action> SceneManager<S, A> {
+impl<S: SceneKey> SceneManager<S> {
     //--- Construction -----------------------------------------------------
 
     /// Creates a new scene manager with an empty stack.
@@ -87,7 +84,6 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
         Self {
             scenes: HashMap::new(),
             stack: Vec::new(),
-            _phantom: PhantomData,
         }
     }
 
@@ -96,18 +92,18 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
     /// Registers a scene with the manager.
     ///
     /// Scenes must be registered before being pushed to the stack.
-    pub fn register_scene(&mut self, key: S, scene: Box<dyn Scene<S, A>>) {
+    pub fn register_scene(&mut self, key: S, scene: Box<dyn Scene<S>>) {
         if self.scenes.insert(key, scene).is_some() {
             warn!("Scene {:?} was already registered and has been replaced", key);
         }
     }
 
     /// Initializes the scene manager by calling on_enter on the initial scene.
-    pub fn start(&mut self, globals: &GlobalResources<S, A>) {
+    pub fn start(&mut self, context: &GlobalContext<S>) {
         if let Some(&initial) = self.stack.first() {
             debug!("Starting scene manager with initial scene: {:?}", initial);
             if let Some(scene) = self.scenes.get_mut(&initial) {
-                scene.on_enter(globals);
+                scene.on_enter(context);
             } else {
                 warn!("Initial scene {:?} not registered", initial);
             }
@@ -119,7 +115,7 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
     /// Updates active scenes.
     ///
     /// Calls update on all transparent scenes and the topmost opaque scene.
-    pub fn update(&mut self, globals: &GlobalResources<S, A>) {
+    pub fn update(&mut self, context: &GlobalContext<S>) {
         if self.stack.is_empty() {
             return;
         }
@@ -128,7 +124,7 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
         let scenes_to_update = self.collect_active_scenes();
 
         // Update all active scenes
-        self.update_scenes(&scenes_to_update, globals);
+        self.update_scenes(&scenes_to_update, context);
     }
 
     //--- Transition Processing --------------------------------------------
@@ -138,17 +134,17 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
     /// Should be called at the tick boundary after scene updates.
     /// Transitions are processed in FIFO order, with appropriate lifecycle
     /// callbacks (on_enter/on_exit) invoked for affected scenes.
-    pub fn process_transitions(&mut self, resources: &mut GlobalResources<S, A>) {
-        let transitions = resources.scene_transitions.take();
+    pub fn process_transitions(&mut self, context: &mut GlobalContext<S>) {
+        let transitions = context.scene_transitions.take();
 
         for transition in transitions {
             match transition {
-                SceneTransition::Push(key) => self.push_internal(key, resources),
-                SceneTransition::Remove(key) => self.remove_internal(key, resources),
+                SceneTransition::Push(key) => self.push_internal(key, context),
+                SceneTransition::Remove(key) => self.remove_internal(key, context),
                 SceneTransition::Replace(old_key, new_key) => {
-                    self.replace_internal(old_key, new_key, resources)
+                    self.replace_internal(old_key, new_key, context)
                 }
-                SceneTransition::Clear => self.clear_internal(resources),
+                SceneTransition::Clear => self.clear_internal(context),
                 SceneTransition::Empty => {}
             }
         }
@@ -156,7 +152,7 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
 
     //--- Internal Helpers -------------------------------------------------
 
-    fn push_internal(&mut self, key: S, globals: &GlobalResources<S, A>) {
+    fn push_internal(&mut self, key: S, context: &GlobalContext<S>) {
         // Check if scene is already in the stack
         if self.stack.contains(&key) {
             warn!("Scene {:?} is already in the stack, skipping push", key);
@@ -173,24 +169,24 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
         self.stack.push(key);
 
         if let Some(scene) = self.scenes.get_mut(&key) {
-            scene.on_enter(globals);
+            scene.on_enter(context);
         }
     }
 
-    fn remove_internal(&mut self, key: S, globals: &GlobalResources<S, A>) {
+    fn remove_internal(&mut self, key: S, context: &GlobalContext<S>) {
         if let Some(pos) = self.stack.iter().position(|&k| k == key) {
             debug!("Removing scene {:?} from stack at position {}", key, pos);
             self.stack.remove(pos);
 
             if let Some(scene) = self.scenes.get_mut(&key) {
-                scene.on_exit(globals);
+                scene.on_exit(context);
             }
         } else {
             debug!("Scene {:?} not found in stack, skipping removal", key);
         }
     }
 
-    fn replace_internal(&mut self, old_key: S, new_key: S, globals: &GlobalResources<S, A>) {
+    fn replace_internal(&mut self, old_key: S, new_key: S, context: &GlobalContext<S>) {
         // Check if old scene exists in stack
         let Some(pos) = self.stack.iter().position(|&k| k == old_key) else {
             warn!("Scene {:?} not found in stack, skipping replacement", old_key);
@@ -213,7 +209,7 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
 
         // Call on_exit for old scene
         if let Some(scene) = self.scenes.get_mut(&old_key) {
-            scene.on_exit(globals);
+            scene.on_exit(context);
         }
 
         // Replace in stack
@@ -221,17 +217,17 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
 
         // Call on_enter for new scene
         if let Some(scene) = self.scenes.get_mut(&new_key) {
-            scene.on_enter(globals);
+            scene.on_enter(context);
         }
     }
 
-    fn clear_internal(&mut self, globals: &GlobalResources<S, A>) {
+    fn clear_internal(&mut self, context: &GlobalContext<S>) {
         debug!("Clearing all scenes from stack");
 
         // Call on_exit for all scenes in the stack
         for &key in &self.stack {
             if let Some(scene) = self.scenes.get_mut(&key) {
-                scene.on_exit(globals);
+                scene.on_exit(context);
             }
         }
 
@@ -258,12 +254,12 @@ impl<S: SceneKey, A: Action> SceneManager<S, A> {
     fn update_scenes(
         &mut self,
         scenes_to_update: &[S],
-        globals: &GlobalResources<S, A>,
+        context: &GlobalContext<S>,
     ) {
         // Update all active scenes
         for &key in scenes_to_update {
             if let Some(scene) = self.scenes.get_mut(&key) {
-                scene.update(globals);
+                scene.update(context);
             }
         }
     }
@@ -284,13 +280,6 @@ mod tests {
     }
 
     impl SceneKey for TestScene {}
-
-    #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
-    enum TestAction {
-        Jump,
-    }
-
-    impl Action for TestAction {}
 
     //--- SceneTransition Tests --------------------------------------------
 
